@@ -17,8 +17,8 @@
 # Environment-specific names (subscription, resource group, IPs) live here.
 .env
 .env.*
-!.env.example
 .state/
+!/.env.example
 
 # Personal drafts: X thread, LinkedIn article, notes, screenshots.
 .scratch/
@@ -31,6 +31,13 @@
 *.pfx
 keys/
 operator-keys/
+shirudo-keys/
+.ssh/
+.gnupg/
+id_rsa
+id_ed25519
+signing_key
+known_hosts
 kubeconfig
 *.kubeconfig
 credentials.json

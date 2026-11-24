@@ -11,16 +11,11 @@
 #      so PCR 11 measures the boot phases) with both keyring parameters
 #   5. add a GRUB entry that chainloads the UKI and arm a one-shot boot
 #
-#   enable-shirudo.sh [--reset-state] <bundle-dir>
-#
-# --reset-state wipes /var/lib/shirudo so that the next boot is a first
-# boot again (init labels the state tree only then). It refuses to run
-# while enforcement is up: boot the plain kernel entry first.
+#   enable-shirudo.sh <verified-bundle-dir>
 set -euo pipefail
 
-reset=0
-if [[ "${1:-}" == --reset-state ]]; then reset=1; shift; fi
-bundle="${1:?usage: enable-shirudo.sh [--reset-state] <bundle-dir>}"
+[[ $# == 1 && "$1" == /* ]] || { echo 'expected one verified bundle directory' >&2; exit 2; }
+bundle="$1"
 here="$(cd "$(dirname "$0")" && pwd)"
 krel="$(cat /etc/shirudo-kernel-release)"
 log() { printf '[enable-shirudo] %s\n' "$*" >&2; }
@@ -29,21 +24,18 @@ export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l
 [[ "$(uname -r)" == "$krel" ]] || { log "boot $krel first (running $(uname -r))"; exit 1; }
 grep -qw bpf.keyring_unsealed=1 /proc/cmdline || { log "cmdline lacks bpf.keyring_unsealed=1"; exit 1; }
 grep -qw dm_verity.keyring_unsealed=1 /proc/cmdline || { log "cmdline lacks dm_verity.keyring_unsealed=1"; exit 1; }
-(cd "$bundle" && sha256sum -c --quiet SHA256SUMS)
 if mountpoint -q /run/shirudo/runtime; then
 	log "enforcement is up; files under /var/lib/shirudo are sealed. Boot the plain kernel entry first."
 	exit 1
 fi
+[[ ! -d /var/lib/shirudo || -z "$(ls -A /var/lib/shirudo)" ]] ||
+	{ log "existing Shirudo state: use a fresh target; nothing was removed"; exit 1; }
 
 log "packages"
 apt-get install -y -q dracut systemd-ukify systemd-boot-efi libtss2-tcti-device0 tpm2-tools >/dev/null
-apt-get install -y -q --reinstall "$bundle"/shirudo-target_*.deb >/dev/null
+[[ "$(dpkg-deb -f "$bundle/target.deb" Package)" == shirudo-target ]]
+apt-get install -y -q "$bundle/target.deb" >/dev/null
 command -v shirudo-gen-initrd >/dev/null
-
-if [[ $reset == 1 ]]; then
-	log "resetting /var/lib/shirudo for a first boot"
-	rm -rf /var/lib/shirudo
-fi
 
 log "images and the operator certificate"
 install -d -m 0700 -o root -g root /var/lib/shirudo /var/lib/shirudo/images /var/lib/shirudo/keys
@@ -75,8 +67,8 @@ systemctl daemon-reload
 systemctl mask -q hv-kvp-daemon.service multipathd.service multipathd.socket 2>/dev/null || true
 
 log "dracut module: systemd's early TPM setup in the initrd"
-rm -rf /usr/lib/dracut/modules.d/91shirudo-tpm2-setup
-cp -a "$here/dracut/91shirudo-tpm2-setup" /usr/lib/dracut/modules.d/
+install -D -m 0755 "$here/dracut/91shirudo-tpm2-setup/module-setup.sh" \
+	/usr/lib/dracut/modules.d/91shirudo-tpm2-setup/module-setup.sh
 
 log "initrd"
 work="$(mktemp -d)"
@@ -88,7 +80,6 @@ tcti="$(ldconfig -p | awk '$1 == "libtss2-tcti-device.so.0" && !found { print $N
 initrd="/boot/initrd-shirudo-$krel.img"
 # Name the packaged binary: a shirudo earlier on PATH could be a link into
 # /run/shirudo/runtime, which dangles whenever enforcement is down.
-rm -f /usr/local/bin/shirudo
 shirudo-gen-initrd --bootstrap-conf "$work/uki-bootstrap.conf" --cert "$bundle/bpf-cert.der" \
 	--binary /usr/bin/shirudo --binary-path /usr/bin/shirudo \
 	--kver "$krel" --output "$initrd" -- --no-hostonly --install "$tcti" --add shirudo-tpm2-setup \

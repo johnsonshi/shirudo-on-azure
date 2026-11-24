@@ -1,123 +1,114 @@
-"""Leak check: fail if anything environment-specific would reach git.
-
-The search terms are the values of AZ_SUBSCRIPTION, AZ_RESOURCE_GROUP and
-ALLOWED_SSH_CIDR in .env, the IP addresses cached in .state/, and every
-comma-separated entry of PRIVATE_TERMS. They are matched case-insensitively,
-so the list itself is never committed.
-
-  python3 tools/check_leaks.py --staged   paths and contents staged for commit (pre-commit hook)
-  python3 tools/check_leaks.py            every path, file version and commit message reachable
-                                          from any ref, and every author/committer email (pre-push hook)
-
-Commit emails must be GitHub noreply addresses. Install both hooks with
-tools/install_hooks.sh and never bypass them with --no-verify: scrub instead.
+"""Check the index (--staged), one commit and its ancestors (--commit SHA),
+or all reachable history (the default pre-push check). Diagnostics are redacted.
 """
 import argparse
+import re
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 REPO = Path(__file__).resolve().parents[1]
-EMAIL_SUFFIX = "@users.noreply.github.com"
-MIN_LEN = 4
-KEYS = ("AZ_SUBSCRIPTION", "AZ_RESOURCE_GROUP", "ALLOWED_SSH_CIDR", "PRIVATE_TERMS")
-
-
-def read_env():
-    values = {}
-    env = REPO / ".env"
-    if env.exists():
-        for line in env.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, _, value = line.partition("=")
-                values[key.strip()] = value.strip().strip('"').strip("'")
-    return values
+DENY_DIRS = {".git", ".scratch", ".state", ".ssh", ".gnupg", "keys", "operator-keys",
+             "shirudo-keys", "build", "artifacts", "out", "__pycache__"}
+DENY_FILES = {"id_ed25519", "id_rsa", "signing_key", "credentials.json", "kubeconfig", "known_hosts"}
+DENY_SUFFIXES = (".key", ".der", ".pem", ".p12", ".pfx", ".kubeconfig", ".log", ".deb", ".upatch",
+                 ".bee", ".efi", ".img", ".jar", ".class", ".p7s", ".pyc", ".zip", ".tar", ".gz", ".zst")
+SECRET = re.compile(rb"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{30,}")
+NOREPLY = re.compile(rb"^[^<>\s@]+@users\.noreply\.github\.com$")
 
 
 def terms():
     found = set()
-    values = read_env()
-    for key in KEYS:
-        for part in values.get(key, "").split(","):
+    for line in (REPO / ".env").read_text().splitlines():
+        key, _, value = line.strip().partition("=")
+        if key not in {"AZ_SUBSCRIPTION", "AZ_RESOURCE_GROUP", "ALLOWED_SSH_CIDR", "PRIVATE_TERMS"}:
+            continue
+        for part in value.strip().strip('"').strip("'").split(","):
             part = part.strip().lower()
             if part.endswith("/32"):
                 part = part[:-3]
-            if len(part) >= MIN_LEN and not part.startswith("<"):
-                found.add(part)
-    state = REPO / ".state"
-    if state.is_dir():
-        for f in state.glob("ip-*"):
-            ip = f.read_text().strip().lower()
-            if len(ip) >= MIN_LEN:
-                found.add(ip)
-    return sorted(found)
+            if len(part) >= 4 and not part.startswith("<"):
+                found.add(part.encode())
+    for file in (REPO / ".state").glob("ip-*"):
+        found.add(file.read_bytes().strip().lower())
+    return found - {b""}
 
 
-def hits(data, needles):
-    low = data.lower()
-    return [n for n in needles if n.encode() in low]
+def git(*args):
+    return subprocess.check_output(["git", "-C", str(REPO), *args])
 
 
-def git(*args, stdin=None):
-    return subprocess.run(["git", "-C", str(REPO), *args], input=stdin, capture_output=True, check=True).stdout
+def denied(name):
+    path = PurePosixPath(name.lower())
+    return (bool(DENY_DIRS.intersection(path.parts)) or path.name in DENY_FILES or
+            any(p.startswith(".env") for p in path.parts) and name != ".env.example" or
+            path.name.endswith(DENY_SUFFIXES))
 
 
-def staged(needles):
-    problems = []
-    names = git("diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z").decode().split("\0")
-    for name in filter(None, names):
-        for n in hits(name.encode(), needles):
-            problems.append(f"path {name} contains {n!r}")
-        for n in hits(git("show", f":{name}"), needles):
-            problems.append(f"staged {name} contains {n!r}")
-    return problems
+def scan(needles, staged=False, commit=None):
+    problems, blobs, trees = set(), set(), set()
 
+    def content(data):
+        return SECRET.search(data) or any(needle in data.lower() for needle in needles)
 
-def history(needles):
-    problems, paths = [], {}
-    for line in git("rev-list", "--objects", "--all").decode().splitlines():
-        sha, _, path = line.partition(" ")
-        paths[sha] = path
-        for n in hits(path.encode(), needles):
-            problems.append(f"path {path} contains {n!r}")
-    if not paths:
+    def entry(name, mode, oid):
+        if mode not in (b"100755", b"100644") or denied(name.decode("utf-8", "surrogateescape")) or content(name):
+            problems.add(f"{oid[:12]}: disallowed path, mode or private name")
+        if mode in (b"100755", b"100644") and oid not in blobs:
+            blobs.add(oid)
+            if content(git("cat-file", "blob", oid)):
+                problems.add(f"{oid[:12]}: private content")
+
+    if staged:
+        for row in git("ls-files", "--stage", "-z").split(b"\0"):
+            if row:
+                header, name = row.split(b"\t", 1)
+                mode, oid, stage = header.split()
+                if stage != b"0":
+                    problems.add("unmerged index")
+                entry(name, mode, oid.decode())
         return problems
-    batch = git("cat-file", "--batch", stdin="\n".join(paths).encode() + b"\n")
-    pos = 0
-    while pos < len(batch):
-        end = batch.index(b"\n", pos)
-        sha, kind, size = batch[pos:end].decode().split()
-        body = batch[end + 1:end + 1 + int(size)]
-        pos = end + 2 + int(size)
-        if kind == "blob":
-            for n in hits(body, needles):
-                problems.append(f"{paths[sha] or sha} (blob {sha[:8]}) contains {n!r}")
-        elif kind == "commit":
-            head, _, message = body.partition(b"\n\n")
-            for row in head.decode(errors="replace").splitlines():
-                if row.startswith(("author ", "committer ")):
-                    email = row[row.find("<") + 1:row.find(">")]
-                    if not email.endswith(EMAIL_SUFFIX):
-                        problems.append(f"commit {sha[:8]} {row.split()[0]} email {email!r} is not a noreply address")
-            for n in hits(message, needles):
-                problems.append(f"commit {sha[:8]} message contains {n!r}")
+
+    for oid in git("rev-list", commit or "--all").decode().splitlines():
+        head, _, msg = git("cat-file", "commit", oid).partition(b"\n\n")
+        for line in head.splitlines():
+            if line.startswith((b"author ", b"committer ")):
+                email = re.search(rb"<([^<>]+)> [0-9]+ [+-][0-9]{4}$", line)
+                if not email or not NOREPLY.fullmatch(email.group(1)):
+                    problems.add(f"{oid[:12]}: non-noreply identity")
+        if content(head) or content(msg):
+            problems.add(f"{oid[:12]}: private commit metadata")
+        tree = head.splitlines()[0].split()[1].decode()
+        if tree in trees:
+            continue
+        trees.add(tree)
+        # rev-list --objects names a blob just once, even after it is copied under a private path.
+        for row in git("ls-tree", "-rz", tree).split(b"\0"):
+            if row:
+                header, name = row.split(b"\t", 1)
+                mode, _, obj = header.split()
+                entry(name, mode, obj.decode())
     return problems
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--staged", action="store_true", help="check the index instead of the whole history")
-    args = ap.parse_args()
-    needles = terms()
+    opts = argparse.ArgumentParser(description=__doc__)
+    group = opts.add_mutually_exclusive_group()
+    group.add_argument("--staged", action="store_true")
+    group.add_argument("--commit", metavar="SHA")
+    args = opts.parse_args()
+    if args.commit and not re.fullmatch("[0-9a-f]{40}", args.commit):
+        opts.error("--commit requires a full commit id")
+    try:
+        needles = terms()
+    except OSError:
+        sys.exit("check_leaks: missing or unreadable private scan input")
     if not needles:
-        sys.exit("check_leaks: no .env values to check against (cp .env.example .env)")
-    problems = staged(needles) if args.staged else history(needles)
-    for p in problems:
-        print("check_leaks:", p, file=sys.stderr)
+        sys.exit("check_leaks: no real .env terms configured")
+    problems = scan(needles, args.staged, args.commit)
     if problems:
-        sys.exit(f"check_leaks: {len(problems)} problem(s); scrub them, never bypass with --no-verify")
-    print(f"check_leaks: clean ({'staged files' if args.staged else 'all reachable history'}, {len(needles)} terms)")
+        sys.exit("check_leaks: refused\n" + "\n".join(sorted(problems)))
+    print("check_leaks: clean")
 
 
 if __name__ == "__main__":

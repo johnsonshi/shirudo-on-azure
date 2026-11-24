@@ -11,10 +11,13 @@
 # public certificates, images and the target package.
 set -euo pipefail
 
-KEYS="${SHIRUDO_KEYS:-$HOME/shirudo-keys}"
-PKGS="${SHIRUDO_OUT:-$HOME/build/shirudo}"
-OUT="${BUNDLE_OUT:-$HOME/build/target-bundle}"
-CONFIG_PCR="${CONFIG_PCR:-13}"
+[[ $# == 0 ]] || exit 2
+umask 077
+KEYS="$HOME/shirudo-keys"
+PKGS="$HOME/build/shirudo"
+OUT="$HOME/build/target-bundle"
+CONFIG_PCR=13
+here="$(cd "$(dirname "$0")/../.." && pwd)"
 GEN=/usr/libexec/shirudo/gen-image
 BUILDER=/usr/libexec/shirudo/shirudo-build
 
@@ -28,16 +31,20 @@ for dir in "$KEYS/bpf" "$KEYS/config"; do
 		shirudo genkey --keys-dir "$dir"
 	fi
 done
-chmod -R go-rwx "$KEYS"
+chmod 0700 "$KEYS"
 
-target_deb="$(ls "$PKGS"/shirudo-target_*.deb | head -1)"
+target_deb="$PKGS/target.deb"
+shopt -s nullglob
+kernel=("$HOME"/build/azure-kernel/latest/linux-image-*_amd64.deb)
+[[ ${#kernel[@]} == 1 && "$(dpkg-deb -f "${kernel[0]}" Package)" == linux-image-*shirudo-azure* ]] ||
+	{ log "expected one non-debug Azure kernel image package"; exit 1; }
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 dpkg-deb -x "$target_deb" "$work/pkg"
 target_bin="$work/pkg/usr/bin/shirudo"
 file "$target_bin" | grep -q 'static' || { log "target binary is not static"; exit 1; }
 
-rm -rf "$OUT" && install -d -m 0700 "$OUT"
+mkdir -m 0700 "$OUT"
 
 log "config image"
 install -d "$work/config-root/etc/shirudo"
@@ -67,8 +74,8 @@ printf 'runtime.image = /var/lib/shirudo/images/runtime\nruntime.root_hash = %s\
 	"$(cat "$OUT/runtime.roothash")" >"$OUT/uki-bootstrap.conf"
 
 cp "$KEYS/bpf/cert.der" "$OUT/bpf-cert.der"
-cp "$target_deb" "$OUT/"
-"$target_bin" version >"$OUT/VERSION" 2>&1 || true
-(cd "$OUT" && sha256sum -- * >SHA256SUMS)
+cp "$target_deb" "$OUT/target.deb"
+cp "${kernel[0]}" "$OUT/kernel.deb"
+python3 "$here/infra/bundle.py" seal
 log "bundle in $OUT"
 ls -l "$OUT"

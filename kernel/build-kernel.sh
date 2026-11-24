@@ -12,24 +12,28 @@
 set -euo pipefail
 
 AZURE_CONF="${1:?usage: build-kernel.sh <azure.conf> [--config-only]}"; shift
-SHIRUDO_DIR="${SHIRUDO_DIR:-$HOME/shirudo}"
-OUT="${KERNEL_OUT:-$HOME/build/azure-kernel}"
+[[ $# == 0 || ( $# == 1 && "$1" == --config-only ) ]] || exit 2
+SHIRUDO_DIR="$HOME/shirudo"
+OUT="$HOME/build/azure-kernel"
+here="$(cd "$(dirname "$0")/.." && pwd)"
+[[ "$(git -C "$SHIRUDO_DIR" rev-parse HEAD)" == "$(cat "$here/patches/shirudo/BASE")" ]]
+mkdir -p "$HOME/build"
+mkdir -m 0700 "$OUT"  # A fresh build, never clean an arbitrary existing output.
 
-work="$SHIRUDO_DIR/testing/kernel-azure"
-rm -rf "$work"
-cp -a "$SHIRUDO_DIR/testing/kernel" "$work"
+work="$(mktemp -d "$SHIRUDO_DIR/testing/kernel-azure.XXXXXXXX")"
+cp -a "$SHIRUDO_DIR/testing/kernel/." "$work/"
 {
 	echo
 	echo "# ---- Azure (Hyper-V Gen2) additions from shirudo-on-azure ----"
 	cat "$AZURE_CONF"
 } >>"$work/kernel-ci.x86-64.conf"
 
-mkdir -p "$OUT"
 "$work/build-kernel.sh" --arch x86-64 --llvm 23 --jobs "$(nproc)" --out "$OUT" "$@"
 
-if [[ " $* " != *" --config-only "* ]]; then
-	pkgdir="$(ls -1dt "$OUT"/pkgs/x86-64/*/ | head -1)"
-	echo "profile=azure (kernel-ci + azure.conf)" >>"$pkgdir/BUILD-INFO"
-	ln -sfn "$pkgdir" "$OUT/latest"
-	echo "kernel packages: $pkgdir"
+if [[ $# == 0 ]]; then
+	shopt -s nullglob
+	dirs=("$OUT"/pkgs/x86-64/*/)
+	[[ ${#dirs[@]} == 1 && -s "${dirs[0]}BUILD-INFO" ]]
+	ln -s "${dirs[0]}" "$OUT/latest"
+	echo "kernel packages: $OUT/latest"
 fi

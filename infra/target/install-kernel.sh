@@ -10,10 +10,11 @@ set -euo pipefail
 dir="${1:?usage: install-kernel.sh <kernel-package-dir>}"
 log() { printf '[install-kernel] %s\n' "$*" >&2; }
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l
+[[ $EUID == 0 && $# == 1 && "$dir" == /* ]] || { log 'run as root with the verified bundle path'; exit 2; }
 
-image_deb="$(find "$dir" -maxdepth 1 -name 'linux-image-*.deb' ! -name '*-dbg*' | head -1)"
-[[ -n "$image_deb" ]] || { log "no linux-image deb in $dir"; exit 1; }
+image_deb="$dir/kernel.deb"
 krel="$(dpkg-deb -f "$image_deb" Package)"
+[[ "$krel" == linux-image-*shirudo-azure* && "$krel" != *-dbg ]] || { log "not an Azure lab kernel"; exit 1; }
 krel="${krel#linux-image-}"
 log "kernel $krel"
 
@@ -28,6 +29,7 @@ GRUB_SERIAL_COMMAND="serial --speed=115200 --unit=0 --word=8 --parity=no --stop=
 GRUB_CMDLINE_LINUX_DEFAULT="${GRUB_CMDLINE_LINUX_DEFAULT} bpf.keyring_unsealed=1 dm_verity.keyring_unsealed=1"
 EOF
 
+apt-get update -q >/dev/null
 apt-get install -y -q "$image_deb" >/dev/null
 
 # The root disk is already full size. Booted without an initrd, the kernel
