@@ -82,7 +82,7 @@ demos/controls/run.sh enroll
 demos/controls/run.sh run --receipt "$SHIRUDO_CONTROL_STATE/receipt.json"
 ```
 
-Use the runner's documented VM-name overrides if you changed either name in `.env`. The runner checks enrolled digests before load. The recorded guest measurements used previously staged artifacts; they are not a live test of this fresh-clone build/transfer path.
+Use the runner's documented VM-name overrides if you changed either name in `.env`. The runner checks enrolled digests before load. The five-pair packaging recipe was also run on the Azure operator with the matching kernel BTF and disposable signers: all ten artifacts built and their transport manifest verified. Those artifacts were discarded, not loaded. The target measurements used previously staged artifacts; they are not a live test of provisioning or of `stage-controls`.
 
 ### Stop spending
 
