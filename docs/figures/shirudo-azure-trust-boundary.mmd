@@ -18,7 +18,7 @@ flowchart LR
         direction TB
         OP_KEYS["Role 1: Operator Signing Keypairs<br/>Separate bpf + config ML-DSA-87 keys<br/>(Never leave operator)"]
         OP_BUILD["Azure Compatibility Build<br/>bpf-next + Hyper-V built-ins<br/>TPM_NV_RSA_BITS = 2048"]
-        OP_ART["Signed Artifacts + Packages<br/>dm-verity runtime + config images<br/>Signed .upatch load/unload + OCI bpm"]
+        OP_ART["Signed Artifacts<br/>dm-verity runtime + config images<br/>Signed .upatch load + unload"]
         OP_VER["Offline Verifier (attest verify)<br/>Fresh nonce + Quote + NV_Certify<br/>Replays eventlog + RSA-2048 NV Name"]
         OP_KEYS --> OP_BUILD --> OP_ART
     end
@@ -33,10 +33,10 @@ flowchart LR
             UKI --> INIT
         end
 
-        subgraph KRN["Enforced Kernel in This Boot (Patched bpf-next)"]
+        subgraph KRN["Enforced Kernel in This Boot (CI bpf-next Profile: capability,bpf)"]
             direction TB
             KR["Sealed Keyrings<br/>.bpf + .dm-verity keyrings"]
-            LSM["Pinned lsm/bpf Guard<br/>Denies unsigned BPF load, map edit,<br/>and link detach in this boot"]
+            LSM["Pinned lsm/bpf Guard<br/>Denies unsigned BPF load/map/detach<br/>(incl. other host BPF / systemd BPF)"]
             BPF_SH["Kernel BPF Shields + app-sandbox<br/>Live LSM/XDP hooks;<br/>contains child exec/net/writes"]
             KR --> LSM --> BPF_SH
         end
@@ -64,8 +64,8 @@ flowchart LR
 
     OUT_SCOPE["Out of Tested Scope: Managed AKS<br/>AKS Linux pools support vTPM, but disallow IaaS OS replacement;<br/>4 workloads, latency, and IG unmeasured pending receipts"]
 
-    OP_ART ==>|"Bootstrap bundle<br/>(public certs + images)"| INIT
-    OP_ART ==>|"2 transports: SSH/file staging<br/>or OCI registry pull (bpm)"| LSM
+    OP_ART ==>|"SSH relay<br/>(signed manifest + bundle)"| INIT
+    OP_ART ==>|"SSH relay or<br/>Azure VM Run Command"| LSM
     AK ==>|"Evidence JSON + fresh nonce"| OP_VER
 
     classDef operatorBox fill:#eff6ff,stroke:#1d4ed8,stroke-width:2px,color:#0f172a
