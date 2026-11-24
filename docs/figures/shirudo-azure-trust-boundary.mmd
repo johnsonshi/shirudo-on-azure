@@ -1,0 +1,81 @@
+---
+title: "Shirudo on an Azure Trusted Launch VM: Experimental Architecture and Trust Boundaries"
+config:
+  theme: base
+  layout: dagre
+  themeVariables:
+    primaryColor: "#eef4ff"
+    primaryTextColor: "#0f172a"
+    primaryBorderColor: "#2563eb"
+    lineColor: "#334155"
+    secondaryColor: "#f8fafc"
+    tertiaryColor: "#fff7ed"
+---
+%% Editable Mermaid source for docs/figures/shirudo-azure-trust-boundary.svg
+%% Experimental Azure IaaS port (not official Azure support; managed AKS not tested).
+flowchart LR
+    subgraph OP["Operator VM (Standard_D32ds_v5, Trusted Launch: vTPM ON, Secure Boot ON)"]
+        direction TB
+        OP_KEYS["Private Signing Keys (Never Leave Operator)<br/>1. ML-DSA-87 upatch signing key<br/>2. ML-DSA-87 config image signing key"]
+        OP_BUILD["Compatibility Build Chain (Ubuntu 26.04.202611100 base)<br/>Patched bpf-next + Hyper-V guest config<br/>shirudo-operator built with TPM_NV_RSA_BITS=2048"]
+        OP_ART["Signed Target Artifacts<br/>dm-verity runtime + signed initial config<br/>Signed .upatch loads + payload-matched unloads"]
+        OP_VER["Offline Verifier (shirudo attest verify)<br/>Checks fresh nonce, TPM2_Quote, NV_Certify,<br/>replays eventlog + recomputes RSA-2048 NV Name"]
+        OP_KEYS --> OP_BUILD --> OP_ART
+    end
+
+    subgraph TGT["Azure Trusted Launch Target VM (Standard_D4ds_v5, Base Image 26.04.202611100, No Inbound App Ports)"]
+        direction TB
+
+        subgraph BOOT["Boot and Initrd Layer (Caveat: Secure Boot OFF, Unsigned UKI)"]
+            direction TB
+            UKI["GRUB Chainloads Unsigned UKI<br/>PCRs 9 and 11 record boot phases,<br/>but do not authenticate early boot alone"]
+            INIT["Initrd Bring-Up (dracut + shirudo init)<br/>1. systemd-tpm2-setup-early defines NvPCRs<br/>2. Retries transient udev EBUSY on dm-verity<br/>3. Binds NV register + seals keyrings"]
+            UKI --> INIT
+        end
+
+        subgraph KRN["Patched bpf-next Kernel Boundary (Hyper-V VMBus, storvsc, netvsc)"]
+            direction TB
+            KR["Sealed Kernel Keyrings (KeyringSealed)<br/>.bpf keyring + .dm-verity keyring<br/>Locked against root tampering after init"]
+            LSM["Pinned BPF LSM Guard (LsmAttached)<br/>Admits BPF loads and unloads only via<br/>ML-DSA-87 signed in-kernel loaders"]
+            BPF_SH["Kernel BPF Shields + PHP app-sandbox<br/>Live kernel hook enforcement;<br/>contains child exec/net/file writes"]
+            KR --> LSM --> BPF_SH
+        end
+
+        subgraph USR["Target Userspace (One-Shot CLI, No Listening Daemon)"]
+            direction TB
+            STATUS["7 Status Conditions Checked OK<br/>LsmAttached, KeyringSealed, ChainIntact,<br/>UpatchesMeasured, TpmMeasured, ConfigActive, XdpCovered"]
+            JAVA_SH["Java Agent Upatch Surface (Userspace)<br/>Verified in userspace, JAR sealed in /run/shirudo-java<br/>Applied via JAVA_TOOL_OPTIONS at JVM startup"]
+        end
+
+        subgraph VTPM["Microsoft Hyper-V vTPM (/dev/tpmrm0, vTPM ON)"]
+            direction TB
+            NVW["Owner Primary NV Writer: RSA-2048<br/>(Stock RSA-3072 refused with TPM_RC_VALUE)<br/>Authorizes policy-gated TPM2_NV_Extend"]
+            REG["Per-Boot Measurement Register (0x01818E00)<br/>Records init + signed load/unload chain"]
+            AK["Attestation Key (AK): ECDSA P-256<br/>Signs Quote + NV_Certify with fresh nonce<br/>(Self-reported AK proves state, not VM identity)"]
+            NVW --> REG --> AK
+        end
+
+        INIT --> KR
+        INIT --> NVW
+        LSM -. "extends via runtime" .-> NVW
+        LSM -. "seals /run/shirudo-java" .-> JAVA_SH
+        STATUS --- LSM
+    end
+
+    OUT_SCOPE["Out of Tested Scope: Managed AKS<br/>AKS supports Trusted Launch vTPM on Linux pools,<br/>but disallows custom IaaS OS/kernel replacement;<br/>4 workloads, latency, and IG also unmeasured"]
+
+    OP_ART ==>|"Admin SSH push / pull delivery<br/>(Public certs + signed bundles only)"| INIT
+    OP_ART ==>|"Signed .upatch load /<br/>payload-matched unload"| LSM
+    AK ==>|"TPM-signed evidence JSON + fresh nonce"| OP_VER
+
+    classDef operatorBox fill:#eff6ff,stroke:#1d4ed8,stroke-width:2px,color:#0f172a
+    classDef kernelBox fill:#ecfdf5,stroke:#047857,stroke-width:2px,color:#0f172a
+    classDef caveatBox fill:#fffbeb,stroke:#b45309,stroke-width:2px,color:#0f172a
+    classDef vtpmBox fill:#f5f3ff,stroke:#6d28d9,stroke-width:2px,color:#0f172a
+    classDef scopeBox fill:#f1f5f9,stroke:#64748b,stroke-dasharray: 5 5,color:#334155
+
+    class OP_KEYS,OP_BUILD,OP_ART,OP_VER operatorBox
+    class KR,LSM,BPF_SH kernelBox
+    class UKI,INIT,JAVA_SH caveatBox
+    class NVW,REG,AK vtpmBox
+    class OUT_SCOPE scopeBox

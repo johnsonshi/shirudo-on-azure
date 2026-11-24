@@ -1,0 +1,60 @@
+---
+title: "Temporary Shields vs Permanent Patching Across Kernel BPF, JVM Agents, and PHP Containment"
+config:
+  theme: base
+  layout: dagre
+  themeVariables:
+    primaryColor: "#f8fafc"
+    primaryTextColor: "#0f172a"
+    primaryBorderColor: "#334155"
+    lineColor: "#475569"
+---
+%% Editable Mermaid source for docs/figures/shirudo-shield-mechanisms.svg
+flowchart TB
+    subgraph LIFE["1. Temporary Shield Lifecycle (Buys Time, Never Replaces Patching)"]
+        direction LR
+        L1["Advisory Disclosed<br/>Patch under test"] --> L2["Operator Signs Shield<br/>ML-DSA-87 .upatch"]
+        L2 --> L3["Target Loads Shield<br/>Measured in vTPM register"]
+        L3 --> L4["Permanent Patch Rolls Out<br/>Kernel, JVM, or PHP upgraded"]
+        L4 --> L5["Payload-Matched Signed Unload<br/>Verifies payload_sha256 + detaches"]
+    end
+
+    subgraph COMP["2. Enforcement Boundary by Shield Type in Shipped Shirudo"]
+        direction LR
+
+        subgraph S_BPF["Kernel BPF Upatch"]
+            direction TB
+            B1["Verification: Kernel checks ML-DSA-87<br/>loader against sealed .bpf keyring"]
+            B2["Activation: Attaches live to BPF LSM,<br/>tracing, or XDP without app restart"]
+            B3["Boundary & Upstream Inputs: Kernel LSM boundary;<br/>unmodified basic + broad AF_ALG socket guard"]
+            B1 --> B2 --> B3
+        end
+
+        subgraph S_JAVA["Java Agent Upatch (type = java)"]
+            direction TB
+            J1["Verification: Userspace checks signature;<br/>seals Premain-Class JAR in /run/shirudo-java"]
+            J2["Activation: Wires JAVA_TOOL_OPTIONS for<br/>newly started JVMs reading environment.d"]
+            J3["Boundary & Upstream Inputs: In-JVM guard;<br/>unmodified java-base64 + java-sql-inj (JDBC)"]
+            J1 --> J2 --> J3
+        end
+
+        subgraph S_PHP["PHP Web Containment (app-sandbox)"]
+            direction TB
+            P1["Mechanism: Unmodified app-sandbox BPF LSM<br/>labels httpd and php-fpm workers + children"]
+            P2["Containment: Blocks unexpected execve,<br/>unlisted egress IPs, and .php writes"]
+            P3["Limit: Does not fix the PHP bug itself;<br/>in-worker PHP still runs until upgraded"]
+            P1 --> P2 --> P3
+        end
+    end
+
+    LIFE --> COMP
+
+    classDef stepBox fill:#eff6ff,stroke:#2563eb,stroke-width:1.5px,color:#0f172a
+    classDef bpfBox fill:#ecfdf5,stroke:#059669,stroke-width:1.5px,color:#0f172a
+    classDef javaBox fill:#fffbeb,stroke:#d97706,stroke-width:1.5px,color:#0f172a
+    classDef phpBox fill:#fef2f2,stroke:#dc2626,stroke-width:1.5px,color:#0f172a
+
+    class L1,L2,L3,L4,L5 stepBox
+    class B1,B2,B3 bpfBox
+    class J1,J2,J3 javaBox
+    class P1,P2,P3 phpBox
