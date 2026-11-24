@@ -30,12 +30,14 @@
 *.p12
 *.pfx
 keys/
+.keys/
 operator-keys/
 shirudo-keys/
 .ssh/
 .gnupg/
 id_rsa
 id_ed25519
+*.pub
 signing_key
 known_hosts
 kubeconfig

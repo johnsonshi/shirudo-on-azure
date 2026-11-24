@@ -2,6 +2,8 @@
 
 Boot [upstream Shirudo](https://github.com/shirudo-dev/shirudo/tree/ff5dd643ac0b3d68310450a2cb9b668416eac036) on a disposable Azure Linux VM. An **operator** builds the kernel and the upstream packages and keeps the signing keys. A **target** boots the resulting unified kernel image (UKI), runs `shirudo init` in the initrd and uses its Azure vTPM for the measurement register. These are separate machines. The repository contains integration code, not public signing keys, prebuilt shields, or a replacement enforcement engine.
 
+Read the [Azure field notes and architecture diagrams](docs/blog/shirudo-on-azure-field-notes.md) for what was measured on the guest and what the vTPM evidence does **not** prove.
+
 ## Start here: no Azure account required
 
 From a checkout of the commit you intend to run:
@@ -49,6 +51,8 @@ python3 infra/azure/lab.py restart --reboot
 # Wait for SSH, then check kernel, runtime mount, service and upstream status.
 python3 infra/azure/lab.py verify
 ```
+
+`verify` reads upstream `status --json`: it requires a target verdict of `ok` and all seven pinned target conditions at `OK`. A working SSH connection, an active systemd unit, or `shirudo status` exiting zero is not enough.
 
 The first boot exposes the two unsealed keyrings for enrollment. The second chainloads the UKI, which carries the pinned runtime root hash and the public BPF certificate. It also includes systemd's early TPM setup in the initrd. The **target's Secure Boot is off** because its custom kernel/UKI is not signed by a firmware-trusted key; its **vTPM stays on**. Neither a vTPM nor this check establishes a production Secure Boot chain or remote attestation. The operator keeps Secure Boot on.
 

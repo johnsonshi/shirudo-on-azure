@@ -45,6 +45,24 @@ class Fixture(unittest.TestCase):
 
 
 class Infrastructure(Fixture):
+    def test_verify_does_not_trust_successful_process_exit(self):
+        rows = [{"type": s, "status": "OK"} for s in sorted(lab.TARGET_CONDITIONS)]
+        healthy = {"schema": 1, "is_target": True, "status": "ok", "conditions": rows}
+        with patch.object(lab, "Lab"), patch.object(lab, "Guests") as guests:
+            run = guests.return_value.run
+            run.return_value = subprocess.CompletedProcess([], 0, json.dumps(healthy).encode())
+            with contextlib.redirect_stdout(io.StringIO()):
+                lab.main(["verify"])
+            self.assertIn("status --json", run.call_args.args[1])
+            for invalid in [b"not-json", b"[]", b"{}", b'{"status":"ok"}',
+                            *[json.dumps({**healthy, **overrides}).encode() for overrides in [
+                                {"status": "degraded"}, {"status": "tampered"}, {"is_target": False},
+                                {"conditions": rows[:-1]}, {"conditions": [rows[1], *rows[1:]]},
+                                {"conditions": [dict(rows[0], status="WARN"), *rows[1:]]}]]]:
+                with self.subTest(report=invalid), self.assertRaises(ValueError):
+                    run.return_value = subprocess.CompletedProcess([], 0, invalid)
+                    lab.main(["verify"])
+
     def test_offline_plan_and_explicit_mutation_flags(self):
         with patch.object(lab, "Lab", side_effect=AssertionError("must remain offline")):
             with contextlib.redirect_stdout(io.StringIO()):
@@ -216,7 +234,8 @@ class Publication(Fixture):
         shutil.copyfile(ROOT / ".gitignore", self.root / ".gitignore")
         paths = [".scratch/social.md", ".env", ".state/ip-guest", "infra/.env.example",
                  "demos/.env.local", "docs/.scratch/private.md", "infra/keys/config.secret",
-                 "tools/shirudo-keys/.hidden", "infra/.ssh/id_rsa", "docs/provision.log"]
+                 "tools/shirudo-keys/.hidden", "infra/.ssh/id_rsa", "docs/provision.log",
+                 "demos/.keys/signer", "tools/operator.pub"]
         self.assertEqual(set(self.git("check-ignore", *paths).decode().splitlines()), set(paths))
         self.assertTrue(all(check_leaks.denied(p) for p in paths))
         self.assertFalse(check_leaks.denied(".env.example"))

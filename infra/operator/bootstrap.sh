@@ -28,7 +28,7 @@ log "apt packages"
 	flex bison bc dwarves cpio zstd xz-utils rsync kmod lsb-release \
 	dpkg-dev fakeroot debhelper devscripts \
 	dracut-core systemd-ukify systemd-boot-efi \
-	tpm2-tools file openssh-client libcap2-bin \
+	tpm2-tools file openssh-client libcap2-bin openjdk-25-jdk-headless maven unzip \
 	autoconf autoconf-archive automake libtool libltdl-dev gettext uuid-dev libjson-c-dev
 
 log "clang and LLVM 23 (upstream installer)"

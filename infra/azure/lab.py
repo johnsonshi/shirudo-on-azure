@@ -2,6 +2,7 @@
 """Workstation entry point. Running without arguments is an offline plan."""
 import argparse
 import io
+import json
 import os
 from pathlib import Path
 import re
@@ -16,6 +17,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "infra"))
 from bundle import FILES, META
 
+TARGET_CONDITIONS = {"LsmAttached", "KeyringSealed", "ChainIntact", "UpatchesMeasured",
+                     "TpmMeasured", "ConfigActive", "XdpCovered"}
 PROJECT_FILES = {
     "operator": ("infra/operator/bootstrap.sh", "infra/operator/build-shirudo.sh",
                  "infra/operator/make-target-bundle.sh", "kernel/azure.conf", "kernel/build-kernel.sh",
@@ -42,6 +45,18 @@ See README.md for prerequisites, trust and cost boundaries."""
 
 def git(root, *args):
     return subprocess.check_output(["git", "-C", str(root), *args])
+
+
+def verify_target(raw):
+    report = json.loads(raw)
+    check(isinstance(report, dict) and type(report.get("schema")) is int and report["schema"] == 1
+          and report.get("is_target") is True and report.get("status") == "ok",
+          "upstream did not report a healthy schema-1 target")
+    rows = report.get("conditions")
+    check(isinstance(rows, list) and len(rows) == len(TARGET_CONDITIONS)
+          and all(isinstance(r, dict) and isinstance(r.get("type"), str) and r.get("status") == "OK" for r in rows)
+          and {r["type"] for r in rows} == TARGET_CONDITIONS,
+          "missing, unexpected, or unhealthy upstream target condition")
 
 
 def payload(root, sha, role):
@@ -141,9 +156,11 @@ def main(argv=None):
         elif args.action == "status":
             guests.run("target", "uname -r && sudo grub-editenv list")
         elif args.action == "verify":
-            guests.run("target", 'test "$(uname -r)" = "$(cat /etc/shirudo-kernel-release)" && '
-                       "mountpoint -q /run/shirudo/runtime && systemctl is-active shirudo.service && "
-                       "sudo /run/shirudo/runtime/usr/bin/shirudo status")
+            report = guests.run("target", 'test "$(uname -r)" = "$(cat /etc/shirudo-kernel-release)" && '
+                                "mountpoint -q /run/shirudo/runtime && systemctl is-active --quiet shirudo.service && "
+                                "sudo /run/shirudo/runtime/usr/bin/shirudo status --json", stdout=subprocess.PIPE)
+            verify_target(report.stdout)
+            print("Shirudo target: ok; all seven pinned runtime conditions are OK.")
 
 
 if __name__ == "__main__":

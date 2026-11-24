@@ -8,10 +8,10 @@ import sys
 from pathlib import Path, PurePosixPath
 
 REPO = Path(__file__).resolve().parents[1]
-DENY_DIRS = {".git", ".scratch", ".state", ".ssh", ".gnupg", "keys", "operator-keys",
+DENY_DIRS = {".git", ".scratch", ".state", ".ssh", ".gnupg", ".keys", "keys", "operator-keys",
              "shirudo-keys", "build", "artifacts", "out", "__pycache__"}
 DENY_FILES = {"id_ed25519", "id_rsa", "signing_key", "credentials.json", "kubeconfig", "known_hosts"}
-DENY_SUFFIXES = (".key", ".der", ".pem", ".p12", ".pfx", ".kubeconfig", ".log", ".deb", ".upatch",
+DENY_SUFFIXES = (".key", ".der", ".pem", ".pub", ".p12", ".pfx", ".kubeconfig", ".log", ".deb", ".upatch",
                  ".bee", ".efi", ".img", ".jar", ".class", ".p7s", ".pyc", ".zip", ".tar", ".gz", ".zst")
 SECRET = re.compile(rb"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{30,}")
 NOREPLY = re.compile(rb"^[^<>\s@]+@users\.noreply\.github\.com$")
