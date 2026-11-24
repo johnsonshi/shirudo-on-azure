@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "observed_utc": "2026-11-24",
+  "kind": "post_measurement_lab_housekeeping",
+  "setting": "crypto.af_alg_restrict",
+  "before": 0,
+  "after": 1,
+  "expected_build_default": 1,
+  "provenance": {
+    "running_kernel": "7.4-shirudo-azure-20261124",
+    "installed_kernel_package_version": "7.4-202611240310.g2bf3351c5f89",
+    "matched_operator_build_release_and_package": true,
+    "pinned_bpf_next_commit": "2bf3351c5f894697e8443eeef5333d4c4ce90cab",
+    "source": "crypto/af_alg.c:32",
+    "source_unchanged_in_operator_build": true,
+    "config_override_found": false,
+    "override_checks": ["systemd-sysctl configuration", "/etc/sysctl.conf", "kernel command line", "modprobe configuration"]
+  },
+  "boot_and_shirudo_register_unchanged": true,
+  "shield_inventory_restored_and_unchanged": true,
+  "legacy_auth_disabled_no_process": true,
+  "port_8080_closed": true,
+  "probe_rerun_after_restoration": false
+}
