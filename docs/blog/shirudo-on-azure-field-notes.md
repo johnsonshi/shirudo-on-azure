@@ -4,33 +4,45 @@
 
 *Status: Independent lab notes with two committed, operator-verified measurement receipts from Microsoft Azure: real Ubuntu PHP-FPM and H2 database runtimes ([`docs/results/azure-controls-real-runtimes.json`](../results/azure-controls-real-runtimes.json)) and minimal local fixtures ([`docs/results/azure-controls.json`](../results/azure-controls.json)), plus post-run kernel setting restoration ([`docs/results/azure-af-alg-restoration.json`](../results/azure-af-alg-restoration.json)). Experimental port on standalone Ubuntu 26.04 VMs, not official Azure or Microsoft support.*
 
-On an Azure Linux virtual machine, I asked a PHP web worker to create two new files containing harmless text in a temporary directory outside any web root: `canary.php` and `canary.txt`.
+Every production security team knows the hardest stretch of a serious vulnerability is the patching gap: the days or weeks between learning a bug exists and finishing the rebuild, staging verification, and rolling upgrade across production servers. During that window, you cannot simply shut off the service, yet leaving the vulnerable behavior exposed invites exploitation.
 
-1. **Before loading the shield:** The PHP worker created both `canary.php` and `canary.txt`.
-2. **With the shield active:** Linux returned permission denied for `canary.php`, while letting the same worker write `canary.txt`.
-3. **After unloading the shield:** Once I ran the signed unload command, the worker could create both `canary.php` and `canary.txt` again.
+When Greg Brockman announced [Shirudo](https://openai.com/index/introducing-shirudo/) (Japanese for "shield"), the open-source Linux runtime built by [OpenAI and Cisco](https://openai.com/index/introducing-shirudo/), the core idea immediately stood out for cloud infrastructure teams. Instead of waiting for a full package upgrade or reboot, an operator loads a small, cryptographically signed temporary rule onto a running Linux host. The goal is to take away the specific action an exploit relies on while letting the service keep doing its ordinary work, then remove the rule cleanly once the permanent fix is rolled out.
 
-[OpenAI and Cisco](https://openai.com/index/introducing-shirudo/) built **[Shirudo](https://github.com/shirudo-dev/shirudo)** (Japanese for "shield") and the published rules tested here; my changes in this repository made its runtime work on Microsoft Azure VMs.
+Reading [OpenAI's announcement](https://openai.com/index/introducing-shirudo/), [Cisco Isovalent's technical post](https://isovalent.com/blog/post/cisco-openai-shirudo/), and Daniel Borkmann and John Fastabend's [Linux Plumbers Conference talk](https://lpc.events/event/20/contributions/2437/), I wanted to test Shirudo myself on Microsoft Azure virtual machines. Could I boot it on Azure Trusted Launch VMs, load real upstream rules, and verify that they actually cut off a risky action without breaking normal application work?
 
-Why would you want a web worker to save ordinary `.txt` data files while refusing new `.php` program files? Because when a serious vulnerability is disclosed, testing and rolling out a software upgrade across every server takes days or weeks. During that gap, attackers who trigger a web bug often try to save a new `.php` script so they can execute their own code on future requests, while the legitimate application still needs to write non-executable data like `.txt` logs or exports.
+Before getting into kernels or virtual TPMs, here is the clearest result from the Azure target VM.
 
-Using Shirudo, an operator loads a small, cryptographically signed temporary rule into a running Linux host to block the behavior an attack relies on, keep normal work running, and remove the rule cleanly once the real software patch is installed. When I read [OpenAI's announcement](https://openai.com/index/introducing-shirudo/), [Cisco Isovalent's technical post](https://isovalent.com/blog/post/cisco-openai-shirudo/), and Daniel Borkmann and John Fastabend's [Linux Plumbers Conference talk](https://lpc.events/event/20/contributions/2437/), I wanted to bring upstream Shirudo up on Microsoft Azure virtual machines myself and see what actually happens on cloud virtual hardware.
+## First result: blocking `canary.php` while `canary.txt` keeps working
 
-**Scope of upstream vs. this Azure lab:**
-- **OpenAI and Cisco (upstream [`shirudo-dev/shirudo`](https://github.com/shirudo-dev/shirudo)):** Built the Shirudo runtime, the signed loader and offline attestation verifier, and the **four protective shields plus one signed no-op lifecycle control** tested unchanged in this write-up (pinned at commit [`ff5dd643ac0b3d68310450a2cb9b668416eac036`](https://github.com/shirudo-dev/shirudo/tree/ff5dd643ac0b3d68310450a2cb9b668416eac036)).
-- **My independent Azure lab (this repository):** Adds the platform integration layer needed to boot and verify Shirudo on two Azure virtual machines (one Hyper-V kernel driver fragment, one early-boot TPM setup hook, and two small runtime compatibility patches), records the test receipts, and provides free offline replay scripts.
+On an Azure Linux virtual machine, I ran an unprivileged Ubuntu `php-fpm` web worker (`8.5.4-0ubuntu1.6`) over a private local Unix socket and asked it to write the same harmless text to two new files in a private temporary directory outside any web root: `canary.php` and `canary.txt`.
 
-**Why `app-sandbox` is temporary containment, not a PHP fix:** Both `canary.php` and `canary.txt` in my test contained inert text outside any web root, not an attempted compromise. Just as importantly, `app-sandbox` does not reach inside the PHP interpreter or fix a bug in PHP application code. Instead, it puts a kernel guardrail around the Ubuntu `php-fpm` worker process (and any child processes it spawns) so a compromised worker cannot create `.php` files (`EACCES`), launch unexpected shell binaries, or open unauthorized network connections while you qualify and roll out the real PHP upgrade.
+Observed result (`app-sandbox`, real Ubuntu PHP-FPM run):
 
-### Replay this result offline (no Azure account required)
+```text
+Before:   canary.php -> written   | canary.txt -> written
+Active:   canary.php -> EACCES    | canary.txt -> written
+Restored: canary.php -> written   | canary.txt -> written
+```
 
-You can replay the recorded evidence for this test on your own laptop right now without an Azure subscription or a cloud VM. From the root of this repository, run:
+- **Before loading the shield:** The PHP worker created both `canary.php` and `canary.txt`.
+- **With the shield active:** Linux refused `canary.php` with `EACCES` (permission denied), while letting the same worker write `canary.txt`.
+- **After the signed unload:** Once I ran the matching signed unload command, the worker created both `canary.php` and `canary.txt` again.
+
+**Why this boundary matters:** A web application often needs to write non-executable data such as `.txt` logs, uploads, or exports, but it rarely needs to create new executable `.php` scripts at runtime. Attackers who trigger a web bug frequently try to drop a new `.php` script so they can execute their own code on future requests. Both `canary.php` and `canary.txt` in my test contained inert text outside any web root, not an attempted compromise. Just as importantly, `app-sandbox` does not reach inside PHP or fix a bug in PHP application code. It acts as temporary kernel containment around the `php-fpm` worker (and any child processes it spawns) while you qualify and roll out the real software upgrade.
+
+**Attribution and scope:**
+- **OpenAI and Cisco (upstream [`shirudo-dev/shirudo`](https://github.com/shirudo-dev/shirudo)):** Built Shirudo and the five upstream controls tested here (four protective shields plus one signed no-op lifecycle control), used unchanged from pinned commit [`ff5dd643ac0b3d68310450a2cb9b668416eac036`](https://github.com/shirudo-dev/shirudo/tree/ff5dd643ac0b3d68310450a2cb9b668416eac036).
+- **My Azure lab work (this repository):** Adapted Shirudo's runtime and kernel configuration to boot, seal, and attest on Azure Trusted Launch VMs (one Hyper-V kernel driver fragment, one early-boot TPM setup hook, and two small runtime compatibility patches), recorded the measurement receipts, and added offline replay scripts.
+
+### Replay this result offline (\$0, no Azure account required)
+
+You can replay the recorded evidence for this test on your own laptop right now without an Azure subscription or a cloud VM. Run this command from the repository root:
 
 ```sh
 demos/controls/app-sandbox.sh --receipt docs/results/azure-controls-real-runtimes.json
 ```
 
-That script reads the committed receipt from my Azure run and prints:
+Exact output from the committed Azure receipt:
 
 ```text
 Recorded evidence (offline replay): app-sandbox, one row from the full suite; no guest contacted.
@@ -41,7 +53,7 @@ Restored: both canaries written after unload
 Positive control: inert .txt write succeeded in all three phases
 ```
 
-All five offline replay scripts in [`demos/controls/`](../../demos/controls/README.md) are completely free and local. Only the live lab provisioning ([`docs/azure-lab-runbook.md`](../azure-lab-runbook.md)) and the live Azure VM Run Command runner (`demos/controls/run.sh`) contact Azure or spend cloud credits.
+All five offline replay scripts in [`demos/controls/`](../../demos/controls/README.md) are completely free (\$0) and local. Only the live lab provisioning ([`docs/azure-lab-runbook.md`](../azure-lab-runbook.md)) and the live Azure VM Run Command runner (`demos/controls/run.sh`) contact Azure or spend cloud credits.
 
 ## What happened across the other four controls on Azure
 
@@ -55,46 +67,96 @@ Here is what happened in the other four controls alongside `app-sandbox`:
 
 ### 1. Blocking a suspicious SQL pattern in Java while normal reads still return `7` (`java-sql-inj`)
 
-Java applications talk to SQL databases through **JDBC** (Java Database Connectivity, the standard Java interface for sending SQL statements). Upstream Shirudo includes a Java startup guard (`upatches/java-sql-inj`) that hooks JDBC `Statement` execution and checks the SQL text against lexical rules before the database runs it. If a query contains suspicious patterns (such as classic SQL injection tautologies or arithmetic comparisons often used to probe a database), the guard rejects the query with a `SecurityException`.
+Observed result (Run 2, Ubuntu H2 `2.2.220-1build1` on a fresh empty in-memory DB):
 
-To test this against a real database driver without opening any network port or running a real attack, I used **H2** (a self-contained SQL database engine written in Java, from Ubuntu's `libh2-java` `2.2.220-1build1` package) backed by a fresh, empty in-memory database. (In the earlier fixture run, I used a mock JDBC `Statement` backed by an empty in-memory SQLite database.)
+```text
+Before:   SELECT 7 -> 7  | harmless false comparison -> empty (0 rows)
+Active:   SELECT 7 -> 7  | harmless false comparison -> SecurityException (new JVM)
+Restored: SELECT 7 -> 7  | harmless false comparison -> empty (0 rows)
+```
+
+Replay this control offline:
+
+```sh
+demos/controls/java-sql-inj.sh --receipt docs/results/azure-controls-real-runtimes.json
+```
+
+Java applications talk to SQL databases through **JDBC** (Java Database Connectivity, the standard Java interface for sending SQL statements). Upstream Shirudo includes a Java startup guard (`upatches/java-sql-inj`) that hooks JDBC `Statement` execution and checks the SQL text against lexical rules before the database runs it. If a query matches a suspicious pattern (such as classic SQL injection tautologies or arithmetic comparisons often used to probe a database), the guard rejects the query with a `SecurityException`.
+
+To test this against a real database driver without opening any network port or running a real attack, I used **H2** (a self-contained SQL database engine written in Java, from Ubuntu's `libh2-java` `2.2.220-1build1` package) backed by a fresh, empty in-memory database. In the earlier fixture run, I used a mock JDBC `Statement` backed by an empty in-memory SQLite database.
 
 Importantly, **this test was not a multi-statement break-in attempt or a live SQL injection attack.** In each phase, I ran two fixed, hardcoded, completely harmless read queries:
-- **Normal read (`SELECT 7`):** A simple scalar query that asks the database to return the number `7`.
-- **Harmless false-comparison read:** A separate, fixed read query whose `WHERE` clause compares two unequal literal numbers. Normally, the database simply evaluates that comparison as false and returns zero rows (`empty`), but the literal comparison pattern matches the upstream guard's rule.
+- **Normal read (`SELECT 7`):** A simple scalar query that asks the database to return the number `7`. It returned `7` in all three phases.
+- **Harmless false-comparison read:** A separate, fixed read query whose `WHERE` clause compares two unequal literal numbers. Normally, the database evaluates that comparison as false and returns zero rows (`empty`), but the literal comparison pattern matches the upstream guard's rule and throws `SecurityException` in a newly started JVM while the shield is active.
 
-Across the three phases:
-- **Before loading the shield:** `SELECT 7` returned `7`, and the harmless false-comparison query executed and returned zero rows.
-- **With the `java-sql-inj` shield active (in a newly started JVM):** `SELECT 7` **still returned `7`**, confirming that normal database reads continued working. When the same process executed the separate false-comparison query, the upstream Java agent rejected it with a `SecurityException`.
-- **After unloading the shield (in a newly started JVM):** `SELECT 7` returned `7`, and the false-comparison query once again executed and returned zero rows.
-- **Load and unload duration:** `756.651 ms` load and `744.478 ms` unload in the H2 run (`756.211 ms` load and `733.741 ms` unload in the SQLite fixture run). Replay offline with `demos/controls/java-sql-inj.sh --receipt docs/results/azure-controls-real-runtimes.json`.
+One-shot signed CLI timings were `756.651 ms` for load and `744.478 ms` for unload in the H2 run (`756.211 ms` load and `733.741 ms` unload in the SQLite fixture run).
 
 ### 2. Blocking Linux kernel `AF_ALG` crypto sockets while normal `AF_UNIX` sockets keep working (`cve-2026-31431-af-alg-block`)
 
+Observed result (Run 2, unprivileged unbound socket creation, median of `15` attempts after `3` warmups):
+
+```text
+Before:   AF_ALG -> allowed (1,952 ns) | AF_UNIX -> allowed (2,096 ns)
+Active:   AF_ALG -> EPERM   (1,442 ns) | AF_UNIX -> allowed (2,124 ns)
+Restored: AF_ALG -> allowed (1,929 ns) | AF_UNIX -> allowed (2,111 ns)
+```
+
+Replay this control offline:
+
+```sh
+demos/controls/af-alg.sh --receipt docs/results/azure-controls-real-runtimes.json
+```
+
 The Linux kernel supports multiple socket families. Local services constantly create `AF_UNIX` sockets to communicate with other processes on the same host. The kernel also exposes an `AF_ALG` socket family that lets user-space programs ask the kernel to perform cryptographic operations. Because almost all ordinary applications use user-space crypto libraries (like OpenSSL) rather than `AF_ALG` kernel sockets, blocking unprivileged processes from creating `AF_ALG` sockets is an effective way to cut off a vulnerable kernel crypto code path (such as `CVE-2026-31431`) while waiting for a scheduled kernel reboot window.
 
-In each phase, an unprivileged process ran `15` measured attempts (after `3` warmups) to create and immediately close an unbound `AF_ALG` socket and an unbound `AF_UNIX` socket (no encryption algorithm was bound and no data was sent):
-- **Before loading the shield:** Unbound `AF_ALG` socket creation was allowed (`1,952 ns` median in Run 2; `1,890 ns` median in Run 1), and `AF_UNIX` socket creation was allowed (`2,096 ns` in Run 2; `2,058 ns` in Run 1).
-- **With the `cve-2026-31431-af-alg-block` shield active:** Unbound `AF_ALG` socket creation was blocked with `EPERM` (`1,442 ns` median in Run 2; `1,446 ns` in Run 1), while `AF_UNIX` socket creation remained allowed (`2,124 ns` in Run 2; `2,122 ns` in Run 1).
-- **After unloading the shield:** Unbound `AF_ALG` socket creation returned to allowed (`1,929 ns` median in Run 2; `1,886 ns` in Run 1), and `AF_UNIX` remained allowed (`2,111 ns` in Run 2; `1,985 ns` in Run 1).
-- **Load and unload duration:** `746.745 ms` load and `730.422 ms` unload in Run 2 (`739.570 ms` load and `727.428 ms` unload in Run 1). Replay offline with `demos/controls/af-alg.sh --receipt docs/results/azure-controls-real-runtimes.json`.
+In each phase, an unprivileged process ran `15` measured attempts (after `3` warmups) to create and immediately close an unbound `AF_ALG` socket and an unbound `AF_UNIX` socket (no encryption algorithm was bound and no data was sent). In Run 1 (the fixture receipt), the same transitions measured `1,890 ns` (`allowed`) -> `1,446 ns` (`EPERM`) -> `1,886 ns` (`allowed`) for `AF_ALG`, and `2,058` / `2,122` / `1,985 ns` (`allowed`) for `AF_UNIX`. One-shot signed CLI timings were `746.745 ms` load and `730.422 ms` unload in Run 2 (`739.570 ms` load and `727.428 ms` unload in Run 1).
 
 **Important context on the kernel setting (`crypto.af_alg_restrict`):** Both measured runs observed the target VM while its runtime kernel setting `crypto.af_alg_restrict` was already `0`. Having that setting at `0` is why unprivileged `AF_ALG` sockets were allowed at baseline so the allowed-to-denied-to-allowed transition could be measured; neither test script lowered or altered the setting. After both attested runs completed, I checked the compiled kernel package (`7.4-202611240310.g2bf3351c5f89`) against its pinned source tree (`crypto/af_alg.c:32` at commit `2bf3351c5f894697e8443eeef5333d4c4ce90cab`), confirmed that the kernel's compiled default is the stricter value `1` (with no config file or boot-parameter override), and restored `crypto.af_alg_restrict` from `0` back to `1` in a separate post-measurement housekeeping step ([`docs/results/azure-af-alg-restoration.json`](../results/azure-af-alg-restoration.json)). I did not re-run the socket probe after restoring the setting to `1`.
 
 ### 3. Attaching the Java Base64 guard to an already-running JVM without a restart (`java-base64`, continuity only)
 
-On the target VM, the signed `java-base64` guard JAR (`upatches/java-base64`) was already installed before the test suite began. Because the runner never unloads a pre-existing shield, it kept that signed JAR in place rather than cycling a load and unload.
+Observed result (Run 2, pre-existing sealed JAR `initial_count = 1`, `preserved_preexisting`):
 
-What I verified here is **running-process continuity across live agent attachment**, not an exploit block:
-- An unprivileged Java process started and decoded the valid Base64 string `Y29udHJvbA==` into `"control"`.
-- I explicitly attached the sealed upstream `java-base64` agent to that **same running JVM**, which emitted the upstream install confirmation.
-- After attachment, the **exact same JVM process** (verified by an unchanged PID and JVM start timestamp) decoded `Y29udHJvbA==` into `"control"` again without a process restart. Because the pre-existing shield remained installed to preserve the host's initial state, post-unload decoding was not measured. Replay offline with `demos/controls/java-base64.sh --receipt docs/results/azure-controls-real-runtimes.json`.
+```text
+Before attach: decode("Y29udHJvbA==") -> "control" (same PID, same JVM start time)
+After attach:  decode("Y29udHJvbA==") -> "control" (upstream install diagnostic emitted)
+Restored:      pre-existing sealed JAR preserved (not unloaded)
+```
 
-### 4. Signed kernel no-op lifecycle (`basic`) and fresh hardware verification
+Replay this control offline:
 
-Finally, upstream's minimal `basic` control (`testing/fixtures/basic.bpf.c`) verified the core signed load and unload lifecycle:
-- **Before -> Active -> After:** The signed kernel no-op control went from absent to loaded and measured in the vTPM, and back to absent after unload (`800.637 ms` load and `731.906 ms` unload in Run 2; `752.294 ms` load and `732.024 ms` unload in Run 1). Each unload file commits to the exact SHA-256 digest of the loaded payload. Replay offline with `demos/controls/basic.sh --receipt docs/results/azure-controls-real-runtimes.json`.
-- **Independent before-and-after hardware verification:** Before each five-control run and again after it finished, the separate operator VM sent a fresh random 32-byte challenge ("nonce") to the target VM's virtual Trusted Platform Module (vTPM) chip. Offline verification on the operator (`shirudo attest verify`) confirmed that both quotes were fresh, rejected a deliberately wrong nonce, and matched the signed configuration root in `PCR 13`. That fresh vTPM proof checked the loaded-rule history against the expected signed changes. Application probes established the denied and allowed writes, queries, and sockets, and a separate guest check found that the starting shield set was restored with no new network listeners. The vTPM did not observe PHP or vouch for ports.
+```sh
+demos/controls/java-base64.sh --receipt docs/results/azure-controls-real-runtimes.json
+```
+
+On the target VM, the signed `java-base64` guard JAR (`upatches/java-base64`) was already installed before the test suite began (`initial_count = 1`). Because the runner never unloads a pre-existing shield, it kept that signed JAR in place rather than cycling a load and unload.
+
+What I verified here is **running-process continuity across live agent attachment**, not an exploit block. An unprivileged Java process started and decoded the valid Base64 string `Y29udHJvbA==` into `"control"`. I then explicitly attached the sealed upstream `java-base64` agent to that **same running JVM**, which emitted the upstream install confirmation. After attachment, the **exact same JVM process** (verified by an unchanged PID and JVM start timestamp) decoded `Y29udHJvbA==` into `"control"` again without a process restart. Because the pre-existing shield remained installed to preserve the host's initial state, post-unload decoding was not measured.
+
+### 4. Signed kernel no-op lifecycle (`basic`) and three separate layers of verification
+
+Observed result (Run 2, signed BPF no-op load and digest-bound unload):
+
+```text
+Before:   absent
+Active:   loaded_and_measured (load: 800.637 ms)
+Restored: absent              (digest-bound unload: 731.906 ms)
+```
+
+Replay this control offline:
+
+```sh
+demos/controls/basic.sh --receipt docs/results/azure-controls-real-runtimes.json
+```
+
+Upstream's minimal `basic` control (`testing/fixtures/basic.bpf.c`) verified the core signed load and unload lifecycle (`800.637 ms` load and `731.906 ms` unload in Run 2; `752.294 ms` load and `732.024 ms` unload in Run 1). Each unload file commits to the exact SHA-256 digest of the loaded payload.
+
+To keep the evidence boundaries clear, three separate checks establish different facts after each five-control run:
+- **Hardware measurement proof (vTPM):** Before and after each run, the separate operator VM sent a fresh random 32-byte nonce to the target VM's vTPM. Offline verification (`shirudo attest verify`) checked the loaded-rule history in `0x01818E00` and `PCR 13` against the expected signed changes, and confirmed that a deliberately wrong nonce was rejected.
+- **Application behavior probes:** The PHP, H2/SQLite, socket, and JVM probes established the actual denied and allowed writes, queries, sockets, and continuity behavior.
+- **Guest state cleanup check:** A separate guest check confirmed that the starting shield set was restored with no new TCP listeners.
+
+Each layer proves its own piece: the vTPM attested the signed rule history, not PHP file writes or open network ports.
 
 ## How Shirudo Shields Work Across the Linux Kernel, Java, and PHP
 
@@ -106,7 +168,7 @@ Studying upstream's code alongside these five tests makes it clear how Shirudo a
 
 ### Live Kernel BPF Shields vs. Java Agent Shields (Startup vs. Live Attach)
 
-Meanwhile as a refresher, not every `.upatch` file sits at the same boundary:
+Not every `.upatch` file sits at the same boundary:
 
 - **Kernel BPF upatches** (such as `basic`, `app-sandbox`, and the `AF_ALG` socket block) use **eBPF**, a Linux kernel technology that runs small, verifier-checked programs at specific kernel security and tracing checkpoints. Upstream Shirudo compiles these into signed in-kernel loader programs that the Linux kernel checks against its sealed `.bpf` keyring. When loaded, kernel hooks attach immediately without rebooting the machine (for task-labeling sandboxes like `app-sandbox`, the sandbox label takes effect the next time a matching worker binary starts via `exec`). During that kernel boot, Shirudo's pinned `lsm/bpf` guard refuses attempts by local processes (even `root`) to load unsigned eBPF programs, alter protected maps, or detach active links without an artifact signed by the operator's private key.
 - **Java upatches (`type = "java"`)** run inside user space and the Java Virtual Machine (JVM) because concepts like SQL query strings and Java's `Base64` class live inside the application runtime rather than the OS kernel. In Shirudo's shipped `java` upatch workflow (used by [`upatches/java-base64`](https://github.com/shirudo-dev/shirudo/tree/ff5dd643ac0b3d68310450a2cb9b668416eac036/upatches/java-base64) and [`upatches/java-sql-inj`](https://github.com/shirudo-dev/shirudo/tree/ff5dd643ac0b3d68310450a2cb9b668416eac036/upatches/java-sql-inj)), `shirudo` checks the signature in user space, places a read-only `java.lang.instrument` JAR (`Premain-Class`) under `/run/shirudo-java/`, and exports `-javaagent:` in `JAVA_TOOL_OPTIONS` via `environment.d` so **newly started JVMs** that inherit that environment load the guard automatically at startup (as in the H2 JDBC test). Already-running JVMs, or system services that ignore `environment.d`, require explicit attachment (as exercised in the `java-base64` continuity check) or explicit `-javaagent` flags. Just as importantly, a Java agent runs inside the JVM process: it is an application-layer mitigation, not a kernel boundary against `root`.
