@@ -14,59 +14,59 @@ config:
 %% Editable Mermaid source for docs/figures/shirudo-azure-trust-boundary.svg
 %% Experimental Azure IaaS port (not official Azure support; managed AKS not tested).
 flowchart LR
-    subgraph OP["Operator VM (Standard_D32ds_v5, Trusted Launch: vTPM ON, Secure Boot ON)"]
+    subgraph OP["Operator VM (Standard_D32ds_v5, vTPM ON, Secure Boot ON)"]
         direction TB
-        OP_KEYS["Private Signing Keys (Never Leave Operator)<br/>1. ML-DSA-87 upatch signing key<br/>2. ML-DSA-87 config image signing key"]
-        OP_BUILD["Compatibility Build Chain (Ubuntu 26.04.202611100 base)<br/>Patched bpf-next + Hyper-V guest config<br/>shirudo-operator built with TPM_NV_RSA_BITS=2048"]
-        OP_ART["Signed Target Artifacts<br/>dm-verity runtime + signed initial config<br/>Signed .upatch loads + payload-matched unloads"]
-        OP_VER["Offline Verifier (shirudo attest verify)<br/>Checks fresh nonce, TPM2_Quote, NV_Certify,<br/>replays eventlog + recomputes RSA-2048 NV Name"]
+        OP_KEYS["Role 1: Operator Signing Keypairs<br/>Separate bpf + config ML-DSA-87 keys<br/>(Never leave operator)"]
+        OP_BUILD["Azure Compatibility Build<br/>bpf-next + Hyper-V built-ins<br/>TPM_NV_RSA_BITS = 2048"]
+        OP_ART["Signed Artifacts + Packages<br/>dm-verity runtime + config images<br/>Signed .upatch load/unload + OCI bpm"]
+        OP_VER["Offline Verifier (attest verify)<br/>Fresh nonce + Quote + NV_Certify<br/>Replays eventlog + RSA-2048 NV Name"]
         OP_KEYS --> OP_BUILD --> OP_ART
     end
 
-    subgraph TGT["Azure Trusted Launch Target VM (Standard_D4ds_v5, Base Image 26.04.202611100, No Inbound App Ports)"]
+    subgraph TGT["Target VM (Standard_D4ds_v5, Base 26.04.202611100, No Inbound App Ports)"]
         direction TB
 
-        subgraph BOOT["Boot and Initrd Layer (Caveat: Secure Boot OFF, Unsigned UKI)"]
+        subgraph BOOT["Boot + Initrd (Caveat: Secure Boot OFF, Unsigned UKI)"]
             direction TB
-            UKI["GRUB Chainloads Unsigned UKI<br/>PCRs 9 and 11 record boot phases,<br/>but do not authenticate early boot alone"]
-            INIT["Initrd Bring-Up (dracut + shirudo init)<br/>1. systemd-tpm2-setup-early defines NvPCRs<br/>2. Retries transient udev EBUSY on dm-verity<br/>3. Binds NV register + seals keyrings"]
+            UKI["Unsigned UKI via GRUB<br/>PCRs 9/11 record boot,<br/>do not authenticate boot"]
+            INIT["Initrd (dracut + shirudo init)<br/>Early TPM setup + EBUSY retry<br/>Binds NV register + seals keyrings"]
             UKI --> INIT
         end
 
-        subgraph KRN["Patched bpf-next Kernel Boundary (Hyper-V VMBus, storvsc, netvsc)"]
+        subgraph KRN["Enforced Kernel in This Boot (Patched bpf-next)"]
             direction TB
-            KR["Sealed Kernel Keyrings (KeyringSealed)<br/>.bpf keyring + .dm-verity keyring<br/>Locked against root tampering after init"]
-            LSM["Pinned BPF LSM Guard (LsmAttached)<br/>Admits BPF loads and unloads only via<br/>ML-DSA-87 signed in-kernel loaders"]
-            BPF_SH["Kernel BPF Shields + PHP app-sandbox<br/>Live kernel hook enforcement;<br/>contains child exec/net/file writes"]
+            KR["Sealed Keyrings<br/>.bpf + .dm-verity keyrings"]
+            LSM["Pinned lsm/bpf Guard<br/>Denies unsigned BPF load, map edit,<br/>and link detach in this boot"]
+            BPF_SH["Kernel BPF Shields + app-sandbox<br/>Live LSM/XDP hooks;<br/>contains child exec/net/writes"]
             KR --> LSM --> BPF_SH
         end
 
-        subgraph USR["Target Userspace (One-Shot CLI, No Listening Daemon)"]
+        subgraph USR["Target Userspace (One-Shot CLI)"]
             direction TB
-            STATUS["7 Status Conditions Checked OK<br/>LsmAttached, KeyringSealed, ChainIntact,<br/>UpatchesMeasured, TpmMeasured, ConfigActive, XdpCovered"]
-            JAVA_SH["Java Agent Upatch Surface (Userspace)<br/>Verified in userspace, JAR sealed in /run/shirudo-java<br/>Applied via JAVA_TOOL_OPTIONS at JVM startup"]
+            STATUS["7 Status Conditions OK<br/>Runtime binary in /run/shirudo/runtime"]
+            JAVA_SH["Java Upatch (type = java)<br/>Userspace check, /run/shirudo-java JAR,<br/>JAVA_TOOL_OPTIONS at JVM startup"]
         end
 
-        subgraph VTPM["Microsoft Hyper-V vTPM (/dev/tpmrm0, vTPM ON)"]
+        subgraph VTPM["Microsoft Hyper-V vTPM (/dev/tpmrm0)"]
             direction TB
-            NVW["Owner Primary NV Writer: RSA-2048<br/>(Stock RSA-3072 refused with TPM_RC_VALUE)<br/>Authorizes policy-gated TPM2_NV_Extend"]
-            REG["Per-Boot Measurement Register (0x01818E00)<br/>Records init + signed load/unload chain"]
-            AK["Attestation Key (AK): ECDSA P-256<br/>Signs Quote + NV_Certify with fresh nonce<br/>(Self-reported AK proves state, not VM identity)"]
+            NVW["Role 3: Per-Boot NV Writer<br/>RSA-2048 owner primary<br/>(Stock RSA-3072 -> TPM_RC_VALUE)"]
+            REG["Measurement Register 0x01818E00<br/>Policy-gated TPM2_NV_Extend"]
+            AK["Role 2: Attestation Key (AK)<br/>ECDSA P-256 signs Quote + NV_Certify<br/>(Proves state, not VM identity)"]
             NVW --> REG --> AK
         end
 
         INIT --> KR
         INIT --> NVW
-        LSM -. "extends via runtime" .-> NVW
-        LSM -. "seals /run/shirudo-java" .-> JAVA_SH
+        LSM -. "extends" .-> NVW
+        LSM -. "seals JAR" .-> JAVA_SH
         STATUS --- LSM
     end
 
-    OUT_SCOPE["Out of Tested Scope: Managed AKS<br/>AKS supports Trusted Launch vTPM on Linux pools,<br/>but disallows custom IaaS OS/kernel replacement;<br/>4 workloads, latency, and IG also unmeasured"]
+    OUT_SCOPE["Out of Tested Scope: Managed AKS<br/>AKS Linux pools support vTPM, but disallow IaaS OS replacement;<br/>4 workloads, latency, and IG unmeasured pending receipts"]
 
-    OP_ART ==>|"Admin SSH push / pull delivery<br/>(Public certs + signed bundles only)"| INIT
-    OP_ART ==>|"Signed .upatch load /<br/>payload-matched unload"| LSM
-    AK ==>|"TPM-signed evidence JSON + fresh nonce"| OP_VER
+    OP_ART ==>|"Bootstrap bundle<br/>(public certs + images)"| INIT
+    OP_ART ==>|"2 transports: SSH/file staging<br/>or OCI registry pull (bpm)"| LSM
+    AK ==>|"Evidence JSON + fresh nonce"| OP_VER
 
     classDef operatorBox fill:#eff6ff,stroke:#1d4ed8,stroke-width:2px,color:#0f172a
     classDef kernelBox fill:#ecfdf5,stroke:#047857,stroke-width:2px,color:#0f172a
