@@ -16,7 +16,7 @@ config:
 flowchart LR
     subgraph OP["Operator VM (Standard_D32ds_v5, vTPM ON, Secure Boot ON)"]
         direction TB
-        OP_KEYS["Role 1: Operator Signing Keypairs<br/>Separate bpf + config ML-DSA-87 keys<br/>(Never leave operator)"]
+        OP_KEYS["Role 1: Operator Signing Keypairs<br/>Separate bpf + config ML-DSA-87 keys<br/>(Keys stay on operator VM)"]
         OP_BUILD["Azure Compatibility Build<br/>bpf-next + Hyper-V built-ins<br/>TPM_NV_RSA_BITS = 2048"]
         OP_ART["Signed Artifacts<br/>dm-verity runtime + config images<br/>Signed .upatch load + unload"]
         OP_VER["Offline Verifier (attest verify)<br/>Fresh nonce + Quote + NV_Certify<br/>Replays eventlog + RSA-2048 NV Name"]
@@ -62,7 +62,7 @@ flowchart LR
         STATUS --- LSM
     end
 
-    OUT_SCOPE["Out of Tested Scope: Managed AKS<br/>AKS Linux pools support vTPM, but disallow IaaS OS replacement;<br/>4 workloads, latency, and IG unmeasured pending receipts"]
+    OUT_SCOPE["Out of Tested Scope: Managed AKS<br/>AKS Linux pools support vTPM, but disallow IaaS OS replacement;<br/>Pending receipts: AF_ALG control, real PHP-FPM supplement, overhead, IG"]
 
     OP_ART ==>|"SSH relay<br/>(signed manifest + bundle)"| INIT
     OP_ART ==>|"SSH relay or<br/>Azure VM Run Command"| LSM
