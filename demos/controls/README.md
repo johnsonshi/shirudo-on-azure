@@ -1,36 +1,66 @@
-# Live upstream Shirudo controls
+# Replaying and Running the Five Upstream Shirudo Controls
 
-This runs five fixed, defensive controls on the existing two-role Azure lab. It uses Azure RBAC Run Command, not SSH. No test opens an IP listener. There is no package downgrade, sysctl change, system service start, reboot, network-rule change, registry, or backend. Run it on a dedicated lab: a loaded upstream shield applies to the guest, not just to the fixture.
+This directory (`demos/controls/`) provides two ways to inspect or run the five defensive controls from upstream Shirudo (`ff5dd643ac0b3d68310450a2cb9b668416eac036`):
 
-Measured receipts: [fixed fixtures](../../docs/results/azure-controls.json) and [real PHP-FPM and H2 JDBC](../../docs/results/azure-controls-real-runtimes.json). The latter used a private Unix socket, never an IP listener.
+1. **Offline replay on your laptop (free, \$0, no Azure account required):** Five shell scripts (`basic.sh`, `java-base64.sh`, `app-sandbox.sh`, `java-sql-inj.sh`, and `af-alg.sh`) read the committed JSON measurement receipts recorded from our Azure runs and print what happened before the shield loaded, while it was active, after it was unloaded, and what normal work continued succeeding throughout.
+2. **Live execution on a prepared two-VM Azure lab (`demos/controls/run.sh`):** Orchestrates all five controls on your dedicated Azure operator and target VMs over Azure RBAC VM Run Command (without opening any inbound TCP application or database port), verifies fresh hardware quotes before and after the run, and restores the target VM's initial shield set.
+
+Measured receipts committed in this repository:
+- **Real Ubuntu PHP-FPM and H2 JDBC runtimes:** [`docs/results/azure-controls-real-runtimes.json`](../../docs/results/azure-controls-real-runtimes.json) (uses Ubuntu's real `php8.5-fpm` over a private local Unix socket and Ubuntu's `libh2-java` H2 database engine in memory).
+- **Minimal fixed fixtures:** [`docs/results/azure-controls.json`](../../docs/results/azure-controls.json) (uses a `php-fpm`-named Python fixture and a mock SQLite JDBC `Statement`).
+
+---
 
 ### Replay a single recorded control (offline)
 
-From the repository root, choose one command. Each reads the fixed-fixture receipt by default, links to its pinned upstream source, and shows the before, active, restored and positive-control observations:
+From the repository root, run any of the five commands below. By default, each script reads the fixed-fixture receipt (`docs/results/azure-controls.json`); pass `--receipt docs/results/azure-controls-real-runtimes.json` to replay the real Ubuntu PHP-FPM and H2 run:
 
 ```sh
-demos/controls/basic.sh
-demos/controls/java-base64.sh
-demos/controls/app-sandbox.sh
-demos/controls/java-sql-inj.sh
-demos/controls/af-alg.sh
+demos/controls/app-sandbox.sh --receipt docs/results/azure-controls-real-runtimes.json
+demos/controls/java-sql-inj.sh --receipt docs/results/azure-controls-real-runtimes.json
+demos/controls/af-alg.sh --receipt docs/results/azure-controls-real-runtimes.json
+demos/controls/java-base64.sh --receipt docs/results/azure-controls-real-runtimes.json
+demos/controls/basic.sh --receipt docs/results/azure-controls-real-runtimes.json
 ```
 
-Pass `--receipt docs/results/azure-controls-real-runtimes.json` to show the separate Ubuntu PHP-FPM/H2 run, or supply a receipt from your own full suite. Exit `0` means the selected recorded row matches its expected observations, `3` means unsupported, and other nonzero statuses indicate missing, malformed or contradictory evidence. These commands do not contact Azure or cryptographically verify a quote. To collect live evidence, run the full suite **once** as described below, then replay its receipt.
+For example, running `demos/controls/app-sandbox.sh --receipt docs/results/azure-controls-real-runtimes.json` prints:
 
-| Control | What to look for |
+```text
+Recorded evidence (offline replay): app-sandbox, one row from the full suite; no guest contacted.
+Upstream: https://github.com/shirudo-dev/shirudo/tree/ff5dd643ac0b3d68310450a2cb9b668416eac036/upatches/app-sandbox
+Before: Ubuntu PHP-FPM worker (private Unix socket): both canaries written
+Active: .php denied (EACCES); .txt written
+Restored: both canaries written after unload
+Positive control: inert .txt write succeeded in all three phases
+```
+
+**How to read the output and exit codes:**
+- `Before`: What happened on the target VM before the shield was loaded.
+- `Active`: What was blocked (or verified) while the signed shield was active.
+- `Restored`: What happened after the matching signed unload removed the shield (or, for `java-base64`, confirmation that the pre-existing shield was retained).
+- `Positive control`: Which normal side-by-side operation kept succeeding across all phases.
+- Exit status `0` means the selected recorded control and the receipt's suite-level attestation and cleanup fields match all expected invariants. Exit status `3` means the control was recorded as `unsupported` in that receipt, and any other nonzero exit code means missing, malformed, or contradictory evidence. These offline scripts do not contact Azure or re-run cryptographic quote verification; to collect new live evidence, run the full suite once as described below.
+
+| Control | What it tests and what to look for (across both receipts) |
 |---|---|
-| [Quickstart `basic`](https://github.com/shirudo-dev/shirudo/blob/ff5dd643ac0b3d68310450a2cb9b668416eac036/testing/fixtures/basic.bpf.c) | The signed no-op is absent, present, then absent. Both events advance the certified register. |
-| [Java Base64](https://github.com/shirudo-dev/shirudo/tree/ff5dd643ac0b3d68310450a2cb9b668416eac036/upatches/java-base64) | One unprivileged JVM decodes `Y29udHJvbA==` to `control` before and after explicit attach. PID and JVM start time stay the same; the sealed JAR emits its upstream install diagnostic. **Continuity, not exploit prevention.** |
-| [Application sandbox](https://github.com/shirudo-dev/shirudo/tree/ff5dd643ac0b3d68310450a2cb9b668416eac036/upatches/app-sandbox) | A temporary copy of distro Python matches the **unchanged upstream PHP-FPM executable selector** in a private mount namespace. A fresh exec after load cannot create `canary.php` (`EACCES`) but can still create `canary.txt`. Both succeed before load and after unload. These are new, inert files outside any web root. **Not a real PHP server or an in-place restriction of an already running process.** |
-| [Java JDBC guard](https://github.com/shirudo-dev/shirudo/tree/ff5dd643ac0b3d68310450a2cb9b668416eac036/upatches/java-sql-inj/agent) | A mock `java.sql.Statement` executes two fixed reads against empty, in-memory SQLite. In a fresh JVM given the sealed agent, the normal `SELECT 7` returns `7`, and a harmless false arithmetic predicate matches the upstream lexical policy and throws the agent's `SecurityException`. No application input or injection attempt. |
-| [AF_ALG family policy](https://github.com/shirudo-dev/shirudo/blob/ff5dd643ac0b3d68310450a2cb9b668416eac036/upatches/kernel-cve/sources/cve-2026-31431-crypto-algif-aead-copy-fail/mitigation/cve-2026-31431-af-alg-block.bpf.c) | An unprivileged process creates and closes unbound sockets. `AF_ALG` succeeds, fails with `EPERM`, then succeeds again. `AF_UNIX` succeeds throughout. The policy covers the **whole family**. No algorithm, bind, send, or crypto operation is used. If the OS already denies the baseline, this control is unsupported; do not relax the OS. |
+| [Application sandbox (`app-sandbox`)](https://github.com/shirudo-dev/shirudo/tree/ff5dd643ac0b3d68310450a2cb9b668416eac036/upatches/app-sandbox) | **Why:** Prevents a compromised web worker from dropping new `.php` program files ("webshells") while allowing ordinary data writes. **Real-runtime receipt:** An unprivileged single-worker Ubuntu `php-fpm` (`8.5.4-0ubuntu1.6`) pool over a private mode-`0600` Unix socket. **Fixture receipt:** A temporary copy of distro Python matching the unchanged upstream `php-fpm` binary path selector in a private mount namespace. **Result:** A fresh worker `exec` after load cannot create `canary.php` (`EACCES`) but can still create `canary.txt` (`written`). Both files succeed before load and after unload. Temporary containment only; does not fix a bug inside PHP. |
+| [Java JDBC SQL guard (`java-sql-inj`)](https://github.com/shirudo-dev/shirudo/tree/ff5dd643ac0b3d68310450a2cb9b668416eac036/upatches/java-sql-inj/agent) | **Why:** Startup Java agent (`Premain-Class`) that inspects SQL strings in `java.sql.Statement` and blocks queries matching suspicious lexical patterns. **Real-runtime receipt:** Ubuntu's H2 database engine (`libh2-java` `2.2.220-1build1`) against a fresh, empty in-memory database. **Fixture receipt:** A mock `java.sql.Statement` backed by empty in-memory SQLite. **Result:** Runs two fixed, harmless read queries (never a multi-statement break-in attempt). The normal query `SELECT 7` returns `7` in all three phases. A separate harmless query containing a false arithmetic comparison returns zero rows (`empty`) before load, is rejected with the agent's `SecurityException` (`policy-exception`) in a newly started JVM while active, and returns zero rows (`empty`) again after unload. |
+| [AF_ALG socket block (`cve-2026-31431-af-alg-block`)](https://github.com/shirudo-dev/shirudo/blob/ff5dd643ac0b3d68310450a2cb9b668416eac036/upatches/kernel-cve/sources/cve-2026-31431-crypto-algif-aead-copy-fail/mitigation/cve-2026-31431-af-alg-block.bpf.c) | **Why:** Blocks unprivileged creation of Linux kernel `AF_ALG` cryptography sockets to mitigate kernel `AF_ALG` vulnerabilities without rebooting. **Result:** An unprivileged process creates and closes unbound sockets (`15` measured attempts after `3` warmups per phase). `AF_ALG` succeeds (`allowed`), is blocked with `EPERM` while active, and succeeds again after unload. Normal `AF_UNIX` local sockets succeed throughout. No cipher is bound and no crypto payload is sent. If the OS already denies `AF_ALG` at baseline, the runner records the control as unsupported rather than relaxing the OS. |
+| [Java Base64 (`java-base64`)](https://github.com/shirudo-dev/shirudo/tree/ff5dd643ac0b3d68310450a2cb9b668416eac036/upatches/java-base64) | **Why:** Verifies running-JVM continuity across live agent attachment (**continuity only, not an exploit demo**). **Result:** One unprivileged JVM decodes `Y29udHJvbA==` to `control` before and after explicit attach of the pre-existing sealed JAR (`initial_count = 1`). The JVM's PID and start timestamp remain identical and the upstream install diagnostic is emitted. The pre-existing shield is preserved, not unloaded. |
+| [Quickstart `basic`](https://github.com/shirudo-dev/shirudo/blob/ff5dd643ac0b3d68310450a2cb9b668416eac036/testing/fixtures/basic.bpf.c) | **Why:** End-to-end check of signed BPF loading, vTPM measurement, and digest-bound unloading. **Result:** The signed no-op shield is `absent` before load, `loaded_and_measured` while active, and `absent` after its digest-bound unload. Both transitions extend the certified vTPM measurement register. |
 
-## Before running
+---
 
-- Use a trusted Azure CLI login with Run Command permission on the intended VMs, Python 3.9+ on the workstation, and the image, kernel, runtime, operator certificates and signed config from this repository. The runner reads only the **explicitly named group** in the **explicitly selected subscription**. A fresh lab requires the initializer's private `.state/owner.json` and matching group and VM ownership tags. Another lab in the subscription is irrelevant. Only for the historical lab without an ownership token, set `SHIRUDO_HISTORICAL_LAB=1` and name its existing `purpose=shirudo-demo` group explicitly. This mode cannot override a mismatched receipt or adopt a newer token-tagged group. Do not retag any deployed lab.
-- Prepare the signed artifacts from the **pinned upstream defensive sources** above. The operator must approve the actual binary pairs; this suite does not establish source-to-binary reproducibility. Its local upstream checkout must include `ff5dd643ac0b3d68310450a2cb9b668416eac036`, with the checked source paths unchanged. `shirudo image verify` must accept the operator's `~/build/target-bundle/initial` against its config certificate.
-- Stage **only the ten named files below** through an authorized management channel. Do not copy whole build directories, signing keys or the upstream Java demo applications. The operator reads `~/build/shields`; the target reads `/var/tmp/shields` (override with `SHIRUDO_TARGET_SHIELDS`). Each row names one directory and a basename; the only suffixes are `.upatch` and `.unload.upatch`.
+## Running the suite live on a prepared two-VM Azure lab
+
+If you do not have a prepared two-VM Azure lab yet, follow the [**Azure Two-VM Lab Runbook (`docs/azure-lab-runbook.md`)**](../../docs/azure-lab-runbook.md) to provision and boot one first. Remember that a loaded upstream shield applies to the target guest VM as a whole, so always use a dedicated lab VM.
+
+### Prerequisites before running
+
+- Use a trusted Azure CLI login (`az`) with `Microsoft.Compute/virtualMachines/runCommand/action` permission on both lab VMs, Python 3.9+ on your workstation, and the kernel, runtime, operator certificates, and signed configuration built from this repository.
+- The runner accesses only the **explicitly named resource group** in the **explicitly selected subscription**. A fresh lab created by `infra/azure/lab.py` requires the initializer's private `.state/owner.json` receipt and matching `shirudoLab` ownership tags on the resource group and both VMs. (Only when targeting the original historical lab created before ownership tokens were introduced, set `SHIRUDO_HISTORICAL_LAB=1` and name its `purpose=shirudo-demo` resource group explicitly; that mode never overrides a mismatched receipt or adopts a token-tagged group.)
+- Prepare the signed shield pairs on the operator VM from the **pinned upstream commit (`ff5dd643ac0b3d68310450a2cb9b668416eac036`)** using `python3 infra/azure/lab.py build-controls` and `python3 infra/azure/lab.py stage-controls` (see [`docs/azure-lab-runbook.md`](../../docs/azure-lab-runbook.md#phase-3-build-stage-and-run-the-five-upstream-controls)). On the operator VM, `shirudo image verify` must accept `~/build/target-bundle/initial` against its config certificate.
+- Stage **only the ten named signed files below** onto the target VM at `/var/tmp/shields` (override with `SHIRUDO_TARGET_SHIELDS`), keeping the originals on the operator at `~/build/shields`. Never copy private signing keys, full build directories, or upstream demo web apps onto the target VM. Each row below represents a `<basename>.upatch` load file and a digest-bound `<basename>.unload.upatch` unload file:
 
   | Directory | Basename |
   |---|---|
@@ -40,11 +70,11 @@ Pass `--receipt docs/results/azure-controls-real-runtimes.json` to show the sepa
   | `sqli` | `java-sql-inj` |
   | `copy-fail` | `cve-2026-31431-af-alg-block` |
 
-- The Java cases need the current Ubuntu OpenJDK 25 JDK and JRE headless candidates installed, and a signed local security index at most three days old. Update the lab via its normal package process beforehand; the demo never fetches packages. The SQLite fixture uses distro Python's `sqlite3` module, not a vulnerable application or a third-party JDBC driver.
+- The Java controls require Ubuntu's current headless OpenJDK 25 JDK and JRE packages (`openjdk-25-jdk-headless` and `openjdk-25-jre-headless`) and a signed local APT security index updated within the past three days (`stage-controls` installs these automatically on a fresh lab). The default fixture run uses distro Python's built-in `sqlite3` module and requires no external database package.
 
-## Run
+## Run the live control suite
 
-Export `AZ_SUBSCRIPTION` and `AZ_RESOURCE_GROUP` privately (do not paste them into the repository). `TARGET_VM`, `OPERATOR_VM`, `ADMIN_USER`, `TARGET_SIZE` and `OPERATOR_SIZE` default to the values in `.env.example`; export any overrides you used in your deployment. Select a **new private directory outside the checkout** for the AK pin and private failure diagnostics:
+Export `AZ_SUBSCRIPTION` and `AZ_RESOURCE_GROUP` in your workstation shell (never commit them). `TARGET_VM`, `OPERATOR_VM`, `ADMIN_USER`, `TARGET_SIZE`, and `OPERATOR_SIZE` default to the values in `.env.example`; export any custom overrides you used when creating your lab. Choose a **new private directory outside the repository checkout** to hold the pinned attestation key and private failure diagnostics:
 
 ```sh
 export SHIRUDO_CONTROL_STATE="$HOME/.local/state/shirudo-controls/lab"
@@ -55,7 +85,7 @@ demos/controls/run.sh run --receipt /tmp/controls-2.json
 
 ### Optional: real PHP-FPM and an H2 JDBC driver
 
-On the **target**, use its configured Ubuntu archive with normal signature verification and the distribution's `python3-apt` module. Refresh the index and download only the three current candidate packages. This does not install them, run maintainer scripts, or change the system service configuration:
+To run the suite against Ubuntu's real `php8.5-fpm` worker and H2 JDBC driver (`libh2-java`) instead of the default Python/SQLite fixtures, first stage the three verified Ubuntu candidate `.deb` archives on the **target VM**. This downloads the signed packages using `apt-get download` without installing them system-wide, running package maintainer scripts, or starting a host daemon:
 
 ```sh
 sudo bash <<'STAGE'
@@ -78,27 +108,23 @@ printf 'Target staging directory: %s\n' "$stage"
 STAGE
 ```
 
-On the **workstation**, use the printed absolute **target** path (never a local directory). Default fixture runs do not need these packages or send `distro.py`:
+Then, from your **workstation**, pass that printed absolute **target VM** directory path to `--distro-debs` (default fixture runs never need these packages or upload `distro.py`):
 
 ```sh
 demos/controls/run.sh run --distro-debs /path/to/private/package-staging \
   --receipt "$SHIRUDO_CONTROL_STATE/real-runtimes.json"
 ```
 
-This mode fails rather than silently substituting the fixtures. It matches each package's full SHA-256, name and version to the distro APT candidate and extracts only the PHP-FPM executable, its Argon2 shared library and the H2 driver JAR. It does not install a package or enable a daemon. The real PHP-FPM master and its single worker run unprivileged in a private network namespace; the only request is fixed FastCGI over a mode-0600 Unix socket. A fresh pool executes the labeled binary in each phase. Its two files are outside the script directory. The real H2 JDBC `Statement` executes the same two fixed reads in a fresh, empty, in-memory database with no database listener. Both modes use the same operator-approved upstream shields.
+When `--distro-debs` is supplied, the runner fails closed rather than falling back to the synthetic fixtures. It verifies each `.deb` file's full SHA-256 digest, package name, and version against the target VM's trusted Ubuntu APT candidate cache and extracts only the `php-fpm` binary, its `libargon2` shared library, and the H2 JAR into a temporary working directory:
+- The real `php-fpm` master and its single worker run unprivileged inside a private network namespace, communicating only over a private mode-`0600` Unix socket via fixed FastCGI requests. A fresh worker pool executes the labeled `php-fpm` binary in each phase (`Before`, `Active`, `Restored`), testing `canary.php` and `canary.txt` outside the script directory.
+- The real H2 JDBC `Statement` runs the same two fixed, harmless reads (`SELECT 7` and the harmless false comparison) against a fresh, empty in-memory H2 database with no network listener.
 
-After the run, on the target remove only those three named `.deb` files from the printed staging directory, then remove that empty directory with `rmdir`. Do not copy a build tree or change an APT trust setting to make a candidate pass.
+After the run finishes, clean up the staging directory on the target VM by removing only those three named `.deb` files (`php8.5-fpm.deb`, `libargon2-1.deb`, `libh2-java.deb`) and removing the empty directory with `rmdir`.
 
-`enroll` pins the target VM identity and AK name, refusing to replace an existing pin. `run` requests independent 32-byte challenges before and after the suite; it never pins a key from either of the documents under test. Each document must verify offline **on the operator**, including the approved config root in PCR 13 and an initrd binding. Each must also fail verification on a different nonce. The final register must equal the verified baseline extended by exactly the expected control events and operator-approved payloads. A previous measured history is **not** a declaration of desired state. This is authenticated-channel TOFU, not endorsement-chain validation, Azure Attestation, or an independent allowlist for every boot PCR. The application and socket outcomes come from guest probes, not directly from the TPM.
+## How verification, cleanup, and timing work
 
-Run Command limits guest output to 4 KiB. The first run may take several minutes to page the full evidence, including firmware logs. Repeat quotes can reuse an identical boot-log suffix from the private state directory; the workstation checks the SHA-256 of the **entire, byte-for-byte reconstructed document** before offline verification. No signed field or log is discarded.
+- **Attestation and fresh nonces:** `enroll` pins the target VM identity and its vTPM attestation key (AK) `Name` once, refusing to overwrite an existing pin. `run` generates independent random 32-byte nonces before and after the five controls and never trusts a key self-reported inside the quotes under test. Both evidence documents are verified offline **on the operator VM** (`shirudo attest verify`), checking initrd binding, the operator-signed configuration root in `PCR 13`, and explicit rejection of a wrong nonce. Finally, the runner verifies that the target's post-run measurement register equals the verified pre-run baseline extended by the exact planned sequence of signed loads and unloads. As noted in the root `README.md`, this is authenticated-channel first-use enrollment (TOFU) with Secure Boot **off** on the target VM and the RSA-2048 NV-writer compatibility patch; it is not Endorsement Key (EK) certificate validation or Azure Guest Attestation.
+- **Run Command output paging:** Azure VM Run Command caps standard output at 4 KiB per invocation. The first evidence collection pages the full quote and firmware boot logs across multiple chunks; subsequent quotes on the same boot can reuse an identical boot-log suffix cached in your private state directory, and the workstation verifies the SHA-256 of the **entire byte-for-byte reconstructed document** before passing it to `shirudo attest verify`.
+- **State restoration and exit codes:** Each run snapshots and compares the full shield inventory, boot ID, TCP listeners, and `crypto.af_alg_restrict` setting before and after execution. It never unloads a pre-existing shield (using the pre-existing signed `java-base64` agent for live-attach continuity only) and always unloads its own loaded shields in a `finally` block. Exit `0` means every control and final attestation check passed; exit `3` writes a partial receipt with `unsupported` leaves only if final attestation and state restoration succeeded. The wrapper never overwrites an existing receipt file.
+- **Timing and `crypto.af_alg_restrict` provenance:** All timings use the guest monotonic clock. Each signed CLI load/unload (`operation_ms`) is timed once per run and includes synchronous vTPM `NV_Extend` work. Socket timings record the median of `15` unbound socket create/close calls (or synchronous `EPERM` refusals) after `3` warmups per socket family and phase. Both committed receipts measured `AF_ALG` while the lab's pre-existing `crypto.af_alg_restrict` was `0` (neither suite changed it). Afterward, [separate housekeeping (`docs/results/azure-af-alg-restoration.json`)](../../docs/results/azure-af-alg-restoration.json) verified that our pinned kernel source initializes `crypto.af_alg_restrict` to `1` and restored the setting to `1` without re-running the socket probe. Never lower an OS security setting on a host just to make `AF_ALG` pass.
 
-A run compares the complete shield inventory, boot identity, TCP listeners and AF_ALG sysctl before and after. It never unloads a pre-existing shield. It can use an already installed, exactly matching signed Base64 agent for **fixture attach only**. An owned load uses a matching signed, payload-bound unload in a `finally` block; expected-register checks reject interleaved state changes. Upstream Java unload can leave a sealed no-op placeholder by design. NV events remain in the measurement history. An interrupted run or unexpected digest is not a pass: inspect private diagnostics and the current measured inventory before rerunning. Do not blindly unload an existing name.
-
-Exit `0` means every control and the final checks passed. Exit `3` writes a partial receipt with explicitly unsupported leaves **only after** successful final verification and cleanup. Other failures do not produce a passing receipt; the wrapper never overwrites an existing receipt. Review a receipt before publishing. No quotes, host identifiers, VM IDs, AKs, raw logs, signatures, or private config are intended for publication.
-
-Durations use the guest monotonic clock. Each signed CLI load/unload is timed once per run. Socket samples time only creation and close, or the synchronous errno: 3 warmups and 15 measured samples per family per phase. These are not application throughput, asynchronous detection latency, or Azure orchestration durations.
-
-The example on this lab uses the repository's Azure vTPM NV-writer compatibility build (RSA-2048). The target has Secure Boot **off**: a verified initrd measurement is not Secure Boot enforcement.
-
-Both receipts measured AF_ALG with the lab's pre-existing `crypto.af_alg_restrict=0`. Neither suite changed it. After the measurements, [separate housekeeping](../../docs/results/azure-af-alg-restoration.json) matched the running kernel package to its operator build, confirmed its pinned source initializes the setting to `1`, found no configured override, and restored and read back `1`. No shield or socket probe was run as part of the restoration. The earlier timings and outcomes are not measurements at the restored value or a claim about stock Ubuntu. Do not lower a restriction to reproduce them.

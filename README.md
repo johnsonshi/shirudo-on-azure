@@ -1,110 +1,46 @@
 # Shirudo on Azure
 
-Boot [upstream Shirudo](https://github.com/shirudo-dev/shirudo/tree/ff5dd643ac0b3d68310450a2cb9b668416eac036) on a disposable Azure Linux VM. An **operator** builds the kernel and the upstream packages and keeps the signing keys. A **target** boots the resulting unified kernel image (UKI), runs `shirudo init` in the initrd and uses its Azure vTPM for the measurement register. These are separate machines. The repository contains integration code, not public signing keys, prebuilt shields, or a replacement enforcement engine.
+Shirudo on Azure is a two-VM reference deployment of [Shirudo](https://github.com/shirudo-dev/shirudo), the open-source Linux runtime from OpenAI and Cisco. Shirudo lets an operator put a temporary security rule in place while a software patch is being tested. This repository provides the Azure kernel configuration, build and deployment scripts, and five demos using the upstream rules unchanged.
 
-Read the [Azure field notes and architecture diagrams](docs/blog/shirudo-on-azure-field-notes.md) or the [runner guide](demos/controls/README.md). There are two separate receipts: the [five fixed controls](docs/results/azure-controls.json) and the [repeat with Ubuntu PHP-FPM and H2 JDBC](docs/results/azure-controls-real-runtimes.json). The latter used one private Unix socket and an empty in-memory database. These are bounded policy and continuity checks with fresh operator-verified attestation, not proof of exploit prevention.
+To try the file rule, start with the recorded demo below; it needs no Azure account. To run the demos on your own VMs, use the [Azure setup guide](docs/azure-lab-runbook.md).
 
-## Start here: no Azure account required
+<a name="replay-this-result-on-your-laptop-right-now-offline-0-no-azure-account-required"></a>
 
-From a checkout of the commit you intend to run:
+## Quick start: replay a recorded demo
+
+From the repository root, run this command with a shell and Python 3.11 or later:
 
 ```sh
 demos/controls/app-sandbox.sh --receipt docs/results/azure-controls-real-runtimes.json
-python3 infra/azure/lab.py plan
-python3 infra/azure/lab.py files operator
-python3 infra/azure/lab.py files target
-python3 -m unittest discover -s tools/tests
-python3 -I demos/controls/test_controls.py
 ```
 
-The first command replays the recorded PHP-FPM result; it does not start a service. The [five per-control demo commands](demos/controls/README.md#replay-a-single-recorded-control-offline) work with either receipt.
+The command reads the saved result of an Azure run. It does not create a VM or start a web server. The relevant lines are:
 
-These commands need Python 3.9+, Git and OpenSSH (including `ssh-keygen -Y` for the tests). They do not log in, provision infrastructure, or contact a guest. The kernel/UKI recipe was booted on Azure; the workstation orchestration and its failure paths are tested offline. A healthy runtime or a benign policy check is **not** evidence that a particular CVE was prevented.
-
-## Build a new lab
-
-Use a workstation with Azure CLI, access to create resources in the intended subscription, and a route to TCP 22 **from one public IPv4 `/32`**. If SSH exits through rotating addresses, do not open the NSG to a service tag or all Azure hosts. Use a workstation with a stable egress address. The VMs need outbound access for Ubuntu packages and pinned source downloads.
-
-1. Log in with `az login`. In this checkout, run `umask 077` and `cp .env.example .env`. Set `AZ_SUBSCRIPTION` to the explicit subscription **UUID**, `AZ_RESOURCE_GROUP` to a **new, dedicated** group name, and fill in location and workstation CIDR. `.env` is data, not a shell script. Supply an existing, dedicated Ed25519 key pair at `SSH_KEY` and `SSH_KEY.pub`. To make one, run `ssh-keygen -t ed25519 -f ~/.ssh/shirudo_on_azure_ed25519` and use `ssh-add` locally for a passphrase-protected key. Agent forwarding is disabled.
-2. Review cost and quota before creation. The example requests a D32ds v5 / 256-GiB build VM, a D4ds v5 / 64-GiB target, two Premium managed disks and two Standard public IPv4 addresses. A kernel build takes time; there is **no automatic shutdown or budget cap**. `latest` selects an Ubuntu 26.04 image revision at creation, not a reproducible OS snapshot. An exact Canonical image version may be set in `.env`.
-3. Run each phase below **separately**. Stop at the first failure. Do not point the initializer at an existing lab: it refuses to adopt existing groups, and guests must be fresh.
-
-```sh
-# Workstation. This is the first command that creates billable resources.
-python3 infra/azure/lab.py create --spend
-python3 infra/azure/lab.py stage operator
-python3 infra/azure/lab.py stage target
-python3 infra/azure/lab.py build
-python3 infra/azure/lab.py relay
+```text
+Before: Ubuntu PHP-FPM worker (private Unix socket): both canaries written
+Active: .php denied (EACCES); .txt written
+Restored: both canaries written after unload
 ```
 
-`stage` sends only the listed regular blobs from the **committed** Git tree, once, into a new commit-specific directory. It never syncs a checkout. `build` fetches the revision in [`patches/shirudo/BASE`](patches/shirudo/BASE), runs its bpf-next kernel builder with [Hyper-V guest options](kernel/azure.conf), then runs upstream `make -C packaging bindeb-pkg` with that kernel's BTF and both local patches. It installs the operator package and uses the upstream image generators for the signed config image, runtime image, and UKI bootstrap. Build logs and keys stay on the operator.
+The two test files contained the same harmless text. With the rule active, a PHP worker could save `canary.txt` but got “Permission denied” when it tried to create `canary.php`. After the rule was removed, both writes succeeded again. That distinction is useful for a web service that needs to save data but should not create new files that the web server could run as code. The rule contains that behavior; it does not fix PHP itself.
 
-`relay` streams individually named boot artifacts through the workstation, not a tar of a build directory. It pins a separate transport public key from the authenticated operator on the target and verifies its signed SHA-256 manifest. This check includes the kernel and Debian packages; it does **not** make the custom kernel UEFI-signed or replace Shirudo's own image checks. The SSH client accepts new host keys on first contact and rejects changed keys. For stronger first-contact assurance, pin independently verified guest host keys in `.state/known_hosts` before staging.
+## Included demos
 
-### Boot and check
+| Demo | Result on Azure |
+| --- | --- |
+| [PHP file creation](demos/controls/app-sandbox.sh) | A worker started under the rule could create the text file but not the PHP file. The test used a private directory outside the web root. |
+| [Java database queries](demos/controls/java-sql-inj.sh) | A normal query returned `7` throughout. A second, harmless query matched the guard's rule and was rejected before reaching the H2 database. It ran again after the guard was removed and the Java process restarted. |
+| [Linux crypto sockets](demos/controls/af-alg.sh) | The rule denied creation of a kernel crypto socket (`AF_ALG`) but allowed a local Unix socket. Both worked again after removal. The VM's separate built-in restriction was off during this test; the [post-run record](docs/results/azure-af-alg-restoration.json) shows it was restored to the stricter default. |
+| [Java live attachment](demos/controls/java-base64.sh) | A running Java process decoded valid Base64 before and after the signed agent attached. Its process ID and start time stayed the same. This checks continuity, not whether an exploit was stopped. |
+| [Signed rule lifecycle](demos/controls/basic.sh) | A signed rule that performs no action was loaded, recorded, then removed with a signed instruction for that exact rule. |
 
-```sh
-python3 infra/azure/lab.py install-kernel
-python3 infra/azure/lab.py restart --reboot
-# Wait for SSH to return. Check that the kernel release contains "shirudo-azure".
-python3 infra/azure/lab.py status
+The [demo guide](demos/controls/README.md) lists all five replay commands and explains how to run the suite live. The [real PHP-FPM and H2 results](docs/results/azure-controls-real-runtimes.json) are separate from the [smaller fixture run](docs/results/azure-controls.json).
 
-python3 infra/azure/lab.py enable
-python3 infra/azure/lab.py restart --reboot
-# Wait for SSH, then check kernel, runtime mount, service and upstream status.
-python3 infra/azure/lab.py verify
-```
+## Deploy and run on Azure
 
-`verify` reads upstream `status --json`: it requires a target verdict of `ok` and all seven pinned target conditions at `OK`. A working SSH connection, an active systemd unit, or `shirudo status` exiting zero is not enough.
+The lab uses two CPU-only Ubuntu VMs. The **operator** builds the software, holds the signing keys, and verifies changes to the loaded rules. The **target** boots the custom Linux kernel and runs the workloads. Its virtual Trusted Platform Module (vTPM) provides signed evidence of rule changes. The applications' return values show whether a particular write, query, or socket call was refused.
 
-The first boot exposes the two unsealed keyrings for enrollment. The second chainloads the UKI, which carries the pinned runtime root hash and the public BPF certificate. It also includes systemd's early TPM setup in the initrd. The **target's Secure Boot is off** because its custom kernel/UKI is not signed by a firmware-trusted key; its **vTPM stays on**. Neither a vTPM nor this check establishes a production Secure Boot chain or remote attestation. The operator keeps Secure Boot on.
+- **New lab:** Follow the [two-VM runbook](docs/azure-lab-runbook.md) for prerequisites, provisioning, boot verification, and cleanup. Creating the VMs incurs Azure charges.
+- **Prepared lab:** Follow the [live runner guide](demos/controls/README.md) to enroll the target and collect a new result. Reading the JSON files in this repository does not rerun these tests.
 
-Both GRUB selections in the fresh initializer are **one-shot**. The saved default stays the distribution kernel. If the new boot fails, inspect boot diagnostics; `restart --reboot` on this receipted target consumes no new boot selection and returns to the saved default after the one-shot has been consumed. If `verify` fails, do not claim enforcement. Do not reset a target identity or wipe its state to make a check pass.
-
-The previously measured guest had the UKI explicitly selected as the saved default. That is **not** the fresh-lab default. Only after `verify` succeeds, an operator who wants that behavior can run `sudo grub-set-default shirudo-uki` **on the target**. Keep the stock kernel and serial recovery access: after promotion, an ordinary restart no longer automatically falls back to the stock entry.
-
-### Run the upstream controls on a fresh lab
-
-After the boot bundle is relayed and the target passes `verify`, **from the workstation**:
-
-```sh
-python3 infra/azure/lab.py build-controls
-python3 infra/azure/lab.py stage-controls
-```
-
-The operator builds five named pairs: upstream `basic`, the Base64 JDK guard, the **JDBC agent module only**, the `app-sandbox` Beefile (including its generated policy), and the broad `AF_ALG` socket guard. It reads only the required blobs at the pinned commit. The runtime itself uses a filtered sparse checkout. No vulnerable application, parent Maven reactor, reproducer, or vulnerable input is built or run. The BPF header is regenerated from the actual Azure kernel BTF and compared with the installed operator header. Upstream `shirudo build` signs each payload and its digest-bound unload using the existing BPF key; the two Java unloads use `--java`.
-
-`stage-controls` updates the signed Ubuntu package index, installs the distribution's current OpenJDK 25 JDK and JRE, checks the operator's signed transport manifest, and installs only ten named signed files into a new root-owned `/var/tmp/shields`. The operator retains the originals at `~/build/shields`; neither build directories nor private keys are copied. Do not reuse artifact directories from another lab.
-
-The [control runner](demos/controls/) uses Azure VM Run Command. Export `AZ_SUBSCRIPTION` and `AZ_RESOURCE_GROUP` with the **same values** as your private `.env` (do not execute `.env` as shell). From the workstation, create a private state directory **outside the checkout**, enroll once, and run the controls:
-
-```sh
-umask 077
-export SHIRUDO_CONTROL_STATE="$(mktemp -d)"
-demos/controls/run.sh enroll
-demos/controls/run.sh run --receipt "$SHIRUDO_CONTROL_STATE/receipt.json"
-```
-
-Run from the checkout holding the fresh lab's `.state/owner.json`. Export any VM-name, admin-user, `OPERATOR_SIZE`, or `TARGET_SIZE` overrides you set in `.env`; the measured profile used the example sizes. The runner checks the selected group and VM ownership tags against that receipt and the enrolled digests before load. The five-pair packaging recipe was also run on the Azure operator with the matching kernel BTF and disposable signers: all ten artifacts built and their transport manifest verified. Those artifacts were discarded, not loaded. The target measurements used previously staged artifacts; they are not a live test of provisioning or of `stage-controls`.
-
-### Stop spending
-
-```sh
-python3 infra/azure/lab.py rollback --delete-owned
-```
-
-Keep the ignored `.state/owner.json` and matching `.env` until cleanup. Rollback checks the subscription, group, VM names, owner tag, expected resource IDs and VM attachment settings before deleting named VMs, disks, NICs, public IPs, VNet and NSG. It never deletes a subscription or a resource group. Do not add other workloads or modify attachments in this dedicated group. If provisioning was interrupted or an unexpected/untagged resource is found, rollback may refuse: inspect that group and its billing inventory in Azure, and remove **only** confirmed lab resources. A stopped guest can still incur disk and IP charges.
-
-## The two compatibility patches
-
-| Change to pinned upstream | Why it is here | Tradeoff |
-| --- | --- | --- |
-| [vTPM NV writer key size](patches/shirudo/0001-tpm-size-the-NV-writer-key-for-vTPMs-without-RSA-307.patch) | The tested Azure vTPM rejected the upstream RSA-3072 writer and accepted RSA-2048. | This reduces the writer key's security margin and changes its evidence layout. Build operator/verifier and target from the same patched revision. This is not a change to the shield-signing algorithm. |
-| [Retry boot image teardown on `EBUSY`](patches/shirudo/0002-init-retry-boot-image-teardown-while-udev-probes-the.patch) | udev probing of dm-verity devices can race teardown in a generic Azure initrd. | A busy unmount/mapping can take about one extra second **per operation**. Persistent busy conditions and other errors still fail initialization; verification is not skipped. |
-
-For the underlying trust model and boot order, see the [pinned upstream boot integration guide](https://github.com/shirudo-dev/shirudo/blob/ff5dd643ac0b3d68310450a2cb9b668416eac036/Documentation/operate/deploy/boot-integration.rst). This lab does not claim binary reproducibility: system packages, build timestamps and the optional `latest` image version can vary.
-
-## Publication hygiene
-
-In a standalone release clone, run `tools/install_hooks.sh` and configure a GitHub noreply author address. Keep real identifiers in the ignored `.env`; add additional private strings to `PRIVATE_TERMS`. `python3 tools/check_leaks.py --staged` checks the whole index, and `python3 tools/check_leaks.py` checks reachable history. Do not bypass a failing hook. The scanner supplements, not replaces, human review of the actual paths, contents, and commit messages being published.
+This is an experimental VM configuration, not a production image or a managed AKS installation. It requires a [Hyper-V kernel configuration](kernel/azure.conf) and [two runtime compatibility patches](patches/shirudo/). The target ran with vTPM enabled and Secure Boot **off**: it could report what booted, but firmware did not prevent a modified boot image from starting. The [field notes](docs/blog/shirudo-on-azure-field-notes.md) cover those tradeoffs, the Azure port, and both measured runs.
