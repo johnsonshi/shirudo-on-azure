@@ -13,7 +13,9 @@ export BPF_VMLINUX_BTF="${btf[0]}"
 out="$HOME/build/shirudo"
 mkdir -m 0700 "$out"  # Do not overwrite packages from a previous build.
 src="$out/src"
-git -C "$HOME/shirudo" worktree add -q --detach "$src" "$base"
+git -C "$HOME/shirudo" worktree add -q --no-checkout --detach "$src" "$base"
+git -C "$src" sparse-checkout set --no-cone --stdin <"$here/infra/operator/runtime.paths"
+git -C "$src" checkout -q --detach "$base"
 git -C "$src" -c user.name=Shirudo -c user.email=shirudo@users.noreply.github.com \
 	am "$here"/patches/shirudo/0001-*.patch "$here"/patches/shirudo/0002-*.patch
 rm -f "$src/vendor/linux/vmlinux.h"

@@ -40,7 +40,9 @@ def git(*args):
 
 def denied(name):
     path = PurePosixPath(name.lower())
-    return (bool(DENY_DIRS.intersection(path.parts)) or path.name in DENY_FILES or
+    return (path.parts[:1] == ("shields",) or
+            (path.parts[:1] == ("demos",) and path.parts[:2] != ("demos", "controls")) or
+            bool(DENY_DIRS.intersection(path.parts)) or path.name in DENY_FILES or
             any(p.startswith(".env") for p in path.parts) and name != ".env.example" or
             path.name.endswith(DENY_SUFFIXES))
 

@@ -13,8 +13,9 @@ from unittest.mock import Mock, patch
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path[:0] = [str(ROOT / "infra/azure"), str(ROOT / "infra"), str(ROOT / "tools")]
+sys.path[:0] = [str(ROOT / "infra/azure"), str(ROOT / "infra/operator"), str(ROOT / "infra"), str(ROOT / "tools")]
 import bundle
+import build_controls
 import check_leaks
 import lab
 from resources import Lab
@@ -154,6 +155,49 @@ class Infrastructure(Fixture):
 
 
 class Transfers(Fixture):
+    def test_control_context_excludes_sibling_modules_and_untracked_bytes(self):
+        self.new_repo()
+        names = build_controls.INPUTS
+        for name in (*names, "upatches/java-sql-inj/app/fixture.txt", "testing/fixtures/unrelated.txt"):
+            p = self.root / name
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("from exact commit")
+        self.git("add", "upatches", "testing")
+        self.git("commit", "-qm", "fixture")
+        (self.root / names[0]).write_text("not in the pinned commit")
+        dest = self.root / "build"
+        build_controls.export_inputs(self.root, "HEAD", dest)
+        self.assertEqual({str(p.relative_to(dest)) for p in dest.rglob("*") if p.is_file()}, set(names))
+        self.assertFalse(any(p.startswith("upatches/java-sql-inj/app/") for p in names))
+        self.assertEqual((dest / names[0]).read_text(), "from exact commit")
+
+    def test_control_pair_requires_correct_signed_type_and_bound_payload(self):
+        n, d = "java-base64", "a"*64
+        info = dict(name=n, signed_name=n, type="unload", payload_type="java", signature_len=4000,
+                    unload_payload_sha256=d, payload_sha256="b"*64)
+        self.assertEqual(build_controls.check_info(info, n, "unload", "java", d), "b"*64)
+        for delta in (dict(signed_name="other"), dict(payload_type="bpf"), dict(signature_len=0),
+                      dict(type="load"), dict(unload_payload_sha256="c"*64)):
+            with self.assertRaises(ValueError):
+                build_controls.check_info({**info, **delta}, n, "unload", "java", d)
+
+    def test_control_manifest_admits_only_known_pairs_and_refuses_linked_parent(self):
+        for name in bundle.CONTROL_FILES:
+            p = self.root / name
+            p.parent.mkdir(exist_ok=True)
+            p.write_bytes(b"benign fixture")
+        (self.root / "walkthrough/.signer").write_bytes(b"never transfer")
+        lines = bundle.manifest(self.root, bundle.CONTROL_FILES).decode().splitlines()
+        self.assertEqual(len(lines), 10)
+        self.assertEqual([x.split("  ")[1] for x in lines], list(bundle.CONTROL_FILES))
+        for name in ("walkthrough/.signer", "walkthrough/*.upatch", "other/basic.upatch", "kernel.deb"):
+            with self.assertRaises(ValueError):
+                bundle.open_artifact(self.root, name, bundle.CONTROL_FILES)
+        (self.root / "walkthrough").rename(self.root / "unexpected-dir")
+        (self.root / "walkthrough").symlink_to(self.root / "unexpected-dir", target_is_directory=True)
+        with self.assertRaises(ValueError):
+            bundle.manifest(self.root, bundle.CONTROL_FILES)
+
     def test_stage_reads_only_allowed_regular_blobs_at_commit(self):
         self.new_repo()
         names = lab.PROJECT_FILES["target"]
@@ -220,6 +264,19 @@ class Transfers(Fixture):
             run(target, "receive", name, data=run(operator, "send", name))
         run(target, "verify")
         self.assertEqual({p.name for p in (target / out).iterdir()}, set(bundle.FILES+bundle.META))
+        controls = Path("build/shields")
+        for name in bundle.CONTROL_FILES:
+            path = operator / controls / name
+            path.parent.mkdir(exist_ok=True, parents=True)
+            path.write_bytes(("benign control: "+name).encode())
+        run(operator, "controls", "seal")
+        run(target, "controls", "begin-receive", data=key)
+        for name in bundle.CONTROL_FILES+bundle.META:
+            run(target, "controls", "receive", name, data=run(operator, "controls", "send", name))
+        run(target, "controls", "verify")
+        run(operator, "controls", "send", "target.deb", ok=False)
+        (target / "build/control-inbox" / bundle.META[1]).write_bytes((target / out / bundle.META[1]).read_bytes())
+        run(target, "controls", "verify", ok=False)  # Wrong signed namespace/contents.
         (operator / out / "kernel.deb").write_bytes(b"unsigned")
         self.assertEqual(run(operator, "send", "kernel.deb", ok=False), b"")
         (target / out / "kernel.deb").write_bytes(b"edited")
@@ -235,10 +292,13 @@ class Publication(Fixture):
         paths = [".scratch/social.md", ".env", ".state/ip-guest", "infra/.env.example",
                  "demos/.env.local", "docs/.scratch/private.md", "infra/keys/config.secret",
                  "tools/shirudo-keys/.hidden", "infra/.ssh/id_rsa", "docs/provision.log",
-                 "demos/.keys/signer", "tools/operator.pub"]
+                 "demos/.keys/signer", "tools/operator.pub", "demos/old-draft.sh", "demos/archive/old-integration.py",
+                 "shields/prototype/Beefile", "shields/old-policy.c"]
         self.assertEqual(set(self.git("check-ignore", *paths).decode().splitlines()), set(paths))
         self.assertTrue(all(check_leaks.denied(p) for p in paths))
         self.assertFalse(check_leaks.denied(".env.example"))
+        self.assertFalse(check_leaks.denied("demos/controls/run.sh"))
+        self.assertEqual(subprocess.run(["git", "-C", str(self.root), "check-ignore", "-q", "demos/controls/run.sh"]).returncode, 1)
 
     def test_index_and_history_catch_renames_and_redact_findings(self):
         self.new_repo()

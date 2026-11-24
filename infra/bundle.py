@@ -18,21 +18,27 @@ FILES = ("kernel.deb", "target.deb", "initial.img", "initial.verity", "initial.r
          "initial.p7s", "runtime.img", "runtime.verity", "runtime.roothash",
          "bpf-cert.der", "uki-bootstrap.conf", "runtime-service.conf")
 META = ("SHA256SUMS", "SHA256SUMS.sig")
+STEMS = ("walkthrough/basic", "java4shell/java-base64", "sqli/java-sql-inj", "php2shell/app-sandbox",
+         "copy-fail/cve-2026-31431-af-alg-block")
+CONTROL_FILES = tuple(stem+ext for stem in STEMS for ext in (".upatch", ".unload.upatch"))
 KEY = Path.home() / "shirudo-keys" / "transport"
 OUT = Path.home() / "build" / "target-bundle"
 SIGNERS = Path.home() / ".shirudo-transport-signers"
 NAMESPACE = "shirudo-on-azure/boot"
 
 
-def limit(name):
-    if name not in FILES + META:
-        raise ValueError("not a named boot artifact")
+def limit(name, files=FILES):
+    if name not in files + META:
+        raise ValueError("not a named artifact")
+    if name.endswith(".upatch"):
+        return 16 * 1024**2
     return 512 * 1024**2 if name.endswith((".deb", ".img", ".verity")) else 64 * 1024
 
 
-def open_artifact(root, name):
-    maximum = limit(name)
-    if root.resolve() != root:
+def open_artifact(root, name, files=FILES):
+    maximum = limit(name, files)
+    parent = (root / name).parent
+    if parent.resolve() != parent:
         raise ValueError("refusing linked bundle directory")
     fd = os.open(root / name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
     f = os.fdopen(fd, "rb")
@@ -43,11 +49,11 @@ def open_artifact(root, name):
     return f
 
 
-def manifest(root):
+def manifest(root, files=FILES):
     lines = []
-    for name in FILES:
+    for name in files:
         h = hashlib.sha256()
-        with open_artifact(root, name) as f:
+        with open_artifact(root, name, files) as f:
             for chunk in iter(lambda: f.read(1024 * 1024), b""):
                 h.update(chunk)
         lines.append(f"{h.hexdigest()}  {name}\n")
@@ -61,37 +67,39 @@ def signer():
     return f"operator {pub[0]} {pub[1]}\n".encode("ascii")
 
 
-def signed_manifest(root, allowed):
+def signed_manifest(root, allowed, files=FILES, namespace=NAMESPACE):
     with open_artifact(root, META[0]) as f:
         sums = f.read()
     with open_artifact(root, META[1]):
-        subprocess.run(["ssh-keygen", "-Y", "verify", "-n", NAMESPACE, "-I", "operator",
+        subprocess.run(["ssh-keygen", "-Y", "verify", "-n", namespace, "-I", "operator",
                         "-f", str(allowed), "-s", str(root / META[1])], input=sums, check=True,
                        stdout=subprocess.DEVNULL)
     rows = sums.splitlines(keepends=True)
-    if len(rows) != len(FILES) or not all(re.fullmatch(rb"[a-f0-9]{64}  "+re.escape(name.encode())+rb"\n", row)
-                                          for row, name in zip(rows, FILES)):
+    if len(rows) != len(files) or not all(re.fullmatch(rb"[a-f0-9]{64}  "+re.escape(name.encode())+rb"\n", row)
+                                          for row, name in zip(rows, files)):
         raise ValueError("unexpected names or format in signed manifest")
     return sums
 
 
-def verify(root, allowed):
-    if signed_manifest(root, allowed) != manifest(root):
-        raise ValueError("boot bundle differs from signed manifest")
+def verify(root, allowed, files=FILES, namespace=NAMESPACE):
+    sums = signed_manifest(root, allowed, files, namespace)
+    if sums != manifest(root, files):
+        raise ValueError("artifacts differ from signed manifest")
+    return sums
 
 
-def send(name):
-    maximum = limit(name)
+def send(name, root=OUT, files=FILES, namespace=NAMESPACE):
+    maximum = limit(name, files)
     with tempfile.NamedTemporaryFile() as authorized:
         authorized.write(signer())
         authorized.flush()
-        sums = signed_manifest(OUT, authorized.name)
+        sums = signed_manifest(root, authorized.name, files, namespace)
     if name in META:
-        with open_artifact(OUT, name) as f:
+        with open_artifact(root, name) as f:
             sys.stdout.buffer.write(f.read())
         return
-    expected = sums.splitlines()[FILES.index(name)][:64].decode("ascii")
-    with open_artifact(OUT, name) as source, tempfile.TemporaryFile() as verified:
+    expected = sums.splitlines()[files.index(name)][:64].decode("ascii")
+    with open_artifact(root, name, files) as source, tempfile.TemporaryFile() as verified:
         digest = hashlib.sha256()
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             if verified.tell() + len(chunk) > maximum:
@@ -106,14 +114,22 @@ def send(name):
 
 def main(args):
     os.umask(0o077)
+    controls = args[:1] == ["controls"]
+    root, files, namespace = OUT, FILES, NAMESPACE
+    if controls:
+        args = args[1:]
+        root = Path.home() / "build" / ("shields" if args[:1] in (["seal"], ["send"]) else "control-inbox")
+        files, namespace = CONTROL_FILES, "shirudo-on-azure/controls"
     if args == ["seal"]:
         if not KEY.exists():
+            if controls:
+                raise ValueError("required existing boot transport signer is missing")
             subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "lab-transport",
                             "-f", str(KEY)], check=True)
-        with (OUT / META[0]).open("xb") as f:
-            f.write(manifest(OUT))
-        subprocess.run(["ssh-keygen", "-Y", "sign", "-n", NAMESPACE, "-f", str(KEY),
-                        str(OUT / META[0])], check=True)
+        with (root / META[0]).open("xb") as f:
+            f.write(manifest(root, files))
+        subprocess.run(["ssh-keygen", "-Y", "sign", "-n", namespace, "-f", str(KEY),
+                        str(root / META[0])], check=True)
     elif args == ["public-signer"]:
         sys.stdout.buffer.write(signer())
     elif args == ["begin-receive"]:
@@ -124,18 +140,24 @@ def main(args):
             if SIGNERS.read_bytes() != key:
                 raise ValueError("operator signer changed")
         else:
+            if controls:
+                raise ValueError("pin the boot transport signer first")
             with SIGNERS.open("xb") as f:
                 f.write(key)
-        if OUT.resolve() != OUT:
+        if root.resolve() != root:
             raise ValueError("refusing linked bundle directory")
-        OUT.mkdir(mode=0o700, parents=True, exist_ok=False)
+        root.mkdir(mode=0o700, parents=True, exist_ok=False)
+        if controls:
+            for stem in STEMS:
+                (root / stem).parent.mkdir(mode=0o700)
     elif len(args) == 2 and args[0] == "send":
-        send(args[1])
+        send(args[1], root, files, namespace)
     elif len(args) == 2 and args[0] == "receive":
-        maximum = limit(args[1])
-        if OUT.resolve() != OUT:
+        maximum = limit(args[1], files)
+        path = root / args[1]
+        if path.parent.resolve() != path.parent:
             raise ValueError("refusing linked bundle directory")
-        with (OUT / args[1]).open("xb") as f:
+        with path.open("xb") as f:
             size = 0
             for chunk in iter(lambda: sys.stdin.buffer.read(1024 * 1024), b""):
                 size += len(chunk)
@@ -145,7 +167,20 @@ def main(args):
             if not size:
                 raise ValueError("empty artifact")
     elif args == ["verify"]:
-        verify(OUT, SIGNERS)
+        verify(root, SIGNERS, files, namespace)
+    elif controls and args == ["install"]:
+        sums = verify(root, SIGNERS, files, namespace)
+        dest = Path("/var/tmp/shields")
+        # mkdir without -p refuses a pre-existing path, including a symlink.
+        subprocess.run(["sudo", "mkdir", "-m", "0700", str(dest)], check=True)
+        for stem in STEMS:
+            subprocess.run(["sudo", "mkdir", "-m", "0700", str((dest / stem).parent)], check=True)
+        for name, row in zip(files, sums.splitlines()):
+            subprocess.run(["sudo", "install", "-o", "root", "-g", "root", "-m", "0400",
+                            str(root / name), str(dest / name)], check=True)
+            digest = subprocess.check_output(["sudo", "sha256sum", str(dest / name)]).split()[0]
+            if digest != row[:64]:
+                raise ValueError("installed artifact differs from signed manifest; do not enroll")
     else:
         raise ValueError("unknown bundle operation")
 

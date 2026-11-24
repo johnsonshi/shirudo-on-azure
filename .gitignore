@@ -8,8 +8,9 @@
 !/infra/
 !/kernel/
 !/patches/
-!/shields/
 !/demos/
+/demos/*
+!/demos/controls/
 !/docs/
 !/tools/
 !/.github/

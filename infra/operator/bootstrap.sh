@@ -32,13 +32,13 @@ log "apt packages"
 	autoconf autoconf-archive automake libtool libltdl-dev gettext uuid-dev libjson-c-dev
 
 log "clang and LLVM 23 (upstream installer)"
-if [[ ! -d "$SHIRUDO_DIR/.git" ]]; then
-	git init -q "$SHIRUDO_DIR"
-	git -C "$SHIRUDO_DIR" remote add origin https://github.com/shirudo-dev/shirudo.git
-fi
-[[ "$(git -C "$SHIRUDO_DIR" remote get-url origin)" == https://github.com/shirudo-dev/shirudo.git ]]
-[[ -z "$(git -C "$SHIRUDO_DIR" status --porcelain)" ]] || { log "refusing a modified source checkout"; exit 1; }
-git -C "$SHIRUDO_DIR" fetch -q --no-tags --depth=1 origin "$SHIRUDO_COMMIT"
+[[ ! -e "$SHIRUDO_DIR" ]] || { log "expected a fresh operator source directory"; exit 1; }
+git init -q "$SHIRUDO_DIR"
+git -C "$SHIRUDO_DIR" remote add origin https://github.com/shirudo-dev/shirudo.git
+git -C "$SHIRUDO_DIR" config remote.origin.promisor true
+git -C "$SHIRUDO_DIR" config remote.origin.partialclonefilter blob:none
+git -C "$SHIRUDO_DIR" sparse-checkout set --no-cone --stdin <"$here/infra/operator/runtime.paths"
+git -C "$SHIRUDO_DIR" fetch -q --no-tags --filter=blob:none --depth=1 origin "$SHIRUDO_COMMIT"
 git -C "$SHIRUDO_DIR" checkout -q --detach "$SHIRUDO_COMMIT"
 [[ "$(git -C "$SHIRUDO_DIR" rev-parse HEAD)" == "$SHIRUDO_COMMIT" ]]
 if ! /usr/bin/clang --version 2>/dev/null | grep -q 'version 23'; then

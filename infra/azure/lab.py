@@ -15,12 +15,13 @@ from resources import Lab, check
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "infra"))
-from bundle import FILES, META
+from bundle import CONTROL_FILES, FILES, META
 
 TARGET_CONDITIONS = {"LsmAttached", "KeyringSealed", "ChainIntact", "UpatchesMeasured",
                      "TpmMeasured", "ConfigActive", "XdpCovered"}
 PROJECT_FILES = {
     "operator": ("infra/operator/bootstrap.sh", "infra/operator/build-shirudo.sh",
+                 "infra/operator/build_controls.py", "infra/operator/runtime.paths",
                  "infra/operator/make-target-bundle.sh", "kernel/azure.conf", "kernel/build-kernel.sh",
                  "patches/shirudo/BASE",
                  "patches/shirudo/0001-tpm-size-the-NV-writer-key-for-vTPMs-without-RSA-307.patch",
@@ -39,6 +40,8 @@ PLAN = """Offline plan (no Azure, SSH or file changes):
   restart --reboot     Restart target; wait for SSH and check status.
   enable               Build/arm Shirudo UKI. Does not reboot.
   restart --reboot     Restart target; wait, then run status and verify.
+  build-controls       Optional: build the five upstream signed pairs on the operator.
+  stage-controls       Install current Ubuntu JDK/JRE; verify and stage only those pairs.
   rollback --delete-owned  Remove only the dedicated lab's named resources (not its group).
 See README.md for prerequisites, trust and cost boundaries."""
 
@@ -101,11 +104,11 @@ class Guests:
         return subprocess.run(self.command(role, f"cd {self.dir} && test -f .complete && "+cmd),
                               check=True, **kwargs)
 
-    def relay(self):
-        tool = "python3 infra/bundle.py"
+    def relay(self, controls=False):
+        tool = "python3 infra/bundle.py" + (" controls" if controls else "")
         public = self.run("operator", tool+" public-signer", stdout=subprocess.PIPE).stdout
         self.run("target", tool+" begin-receive", input=public)
-        for name in FILES + META:
+        for name in (CONTROL_FILES if controls else FILES) + META:
             cmd = self.command("operator", f"cd {self.dir} && {tool} send {name}")
             with subprocess.Popen(cmd, stdout=subprocess.PIPE) as sender:
                 try:
@@ -114,12 +117,15 @@ class Guests:
                     sender.stdout.close()
                 check(sender.wait() == 0, "operator transfer failed")
         self.run("target", tool+" verify")
+        if controls:
+            self.run("target", tool+" install")
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     cmds = parser.add_subparsers(dest="action")
-    for cmd in ("plan", "build", "relay", "install-kernel", "enable", "status", "verify"):
+    for cmd in ("plan", "build", "relay", "install-kernel", "enable", "status", "verify",
+                "build-controls", "stage-controls"):
         cmds.add_parser(cmd)
     for cmd, flag in (("create", "--spend"), ("restart", "--reboot"), ("rollback", "--delete-owned")):
         cmds.add_parser(cmd).add_argument(flag, required=True, action="store_true")
@@ -150,6 +156,13 @@ def main(argv=None):
                        "infra/operator/build-shirudo.sh && infra/operator/make-target-bundle.sh")
         elif args.action == "relay":
             guests.relay()
+        elif args.action == "build-controls":
+            guests.run("operator", "python3 infra/operator/build_controls.py")
+        elif args.action == "stage-controls":
+            guests.run("target", "sudo apt-get -o APT::Update::Error-Mode=any update -q && "
+                       "sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "
+                       "openjdk-25-jdk-headless openjdk-25-jre-headless")
+            guests.relay(controls=True)
         elif args.action in ("install-kernel", "enable"):
             script = "install-kernel" if args.action == "install-kernel" else "enable-shirudo"
             guests.run("target", f'python3 infra/bundle.py verify && sudo infra/target/{script}.sh "$HOME/build/target-bundle"')

@@ -56,7 +56,33 @@ python3 infra/azure/lab.py verify
 
 The first boot exposes the two unsealed keyrings for enrollment. The second chainloads the UKI, which carries the pinned runtime root hash and the public BPF certificate. It also includes systemd's early TPM setup in the initrd. The **target's Secure Boot is off** because its custom kernel/UKI is not signed by a firmware-trusted key; its **vTPM stays on**. Neither a vTPM nor this check establishes a production Secure Boot chain or remote attestation. The operator keeps Secure Boot on.
 
-Both GRUB selections are **one-shot**. The saved default stays the distribution kernel. If the new boot fails, inspect boot diagnostics; `restart --reboot` on this receipted target consumes no new boot selection and returns to the saved default after the one-shot has been consumed. If `verify` fails, do not claim enforcement. Do not reset a target identity or wipe its state to make a check pass.
+Both GRUB selections in the fresh initializer are **one-shot**. The saved default stays the distribution kernel. If the new boot fails, inspect boot diagnostics; `restart --reboot` on this receipted target consumes no new boot selection and returns to the saved default after the one-shot has been consumed. If `verify` fails, do not claim enforcement. Do not reset a target identity or wipe its state to make a check pass.
+
+The previously measured guest had the UKI explicitly selected as the saved default. That is **not** the fresh-lab default. Only after `verify` succeeds, an operator who wants that behavior can run `sudo grub-set-default shirudo-uki` **on the target**. Keep the stock kernel and serial recovery access: after promotion, an ordinary restart no longer automatically falls back to the stock entry.
+
+### Run the upstream controls on a fresh lab
+
+After the boot bundle is relayed and the target passes `verify`, **from the workstation**:
+
+```sh
+python3 infra/azure/lab.py build-controls
+python3 infra/azure/lab.py stage-controls
+```
+
+The operator builds five named pairs: upstream `basic`, the Base64 JDK guard, the **JDBC agent module only**, the `app-sandbox` Beefile (including its generated policy), and the broad `AF_ALG` socket guard. It reads only the required blobs at the pinned commit. The runtime itself uses a filtered sparse checkout. No vulnerable application, parent Maven reactor, reproducer, or vulnerable input is built or run. The BPF header is regenerated from the actual Azure kernel BTF and compared with the installed operator header. Upstream `shirudo build` signs each payload and its digest-bound unload using the existing BPF key; the two Java unloads use `--java`.
+
+`stage-controls` updates the signed Ubuntu package index, installs the distribution's current OpenJDK 25 JDK and JRE, checks the operator's signed transport manifest, and installs only ten named signed files into a new root-owned `/var/tmp/shields`. The operator retains the originals at `~/build/shields`; neither build directories nor private keys are copied. Do not reuse artifact directories from another lab.
+
+The [control runner](demos/controls/) uses Azure VM Run Command. Export `AZ_SUBSCRIPTION` and `AZ_RESOURCE_GROUP` with the **same values** as your private `.env` (do not execute `.env` as shell). From the workstation, create a private state directory **outside the checkout**, enroll once, and run the controls:
+
+```sh
+umask 077
+export SHIRUDO_CONTROL_STATE="$(mktemp -d)"
+demos/controls/run.sh enroll
+demos/controls/run.sh run --receipt "$SHIRUDO_CONTROL_STATE/receipt.json"
+```
+
+Use the runner's documented VM-name overrides if you changed either name in `.env`. The runner checks enrolled digests before load. The recorded guest measurements used previously staged artifacts; they are not a live test of this fresh-clone build/transfer path.
 
 ### Stop spending
 
