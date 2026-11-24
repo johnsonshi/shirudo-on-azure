@@ -12,7 +12,7 @@ This runs five fixed, defensive controls on the existing two-role Azure lab. It 
 
 ## Before running
 
-- Use a trusted Azure CLI login with Run Command permission on the intended existing VMs, Python 3.9+ on the workstation, and the image, kernel, runtime, operator certificates and signed config from this repository. The explicit subscription must contain exactly one group tagged `purpose=shirudo-demo`, with just the configured target and operator roles and the expected SKUs.
+- Use a trusted Azure CLI login with Run Command permission on the intended VMs, Python 3.9+ on the workstation, and the image, kernel, runtime, operator certificates and signed config from this repository. The runner reads only the **explicitly named group** in the **explicitly selected subscription**. A fresh lab requires the initializer's private `.state/owner.json` and matching group and VM ownership tags. Another lab in the subscription is irrelevant. Only for the historical lab without an ownership token, set `SHIRUDO_HISTORICAL_LAB=1` and name its existing `purpose=shirudo-demo` group explicitly. This mode cannot override a mismatched receipt or adopt a newer token-tagged group. Do not retag any deployed lab.
 - Prepare the signed artifacts from the **pinned upstream defensive sources** above. The operator must approve the actual binary pairs; this suite does not establish source-to-binary reproducibility. Its local upstream checkout must include `ff5dd643ac0b3d68310450a2cb9b668416eac036`, with the checked source paths unchanged. `shirudo image verify` must accept the operator's `~/build/target-bundle/initial` against its config certificate.
 - Stage **only the ten named files below** through an authorized management channel. Do not copy whole build directories, signing keys or the upstream Java demo applications. The operator reads `~/build/shields`; the target reads `/var/tmp/shields` (override with `SHIRUDO_TARGET_SHIELDS`). Each row names one directory and a basename; the only suffixes are `.upatch` and `.unload.upatch`.
 
@@ -28,7 +28,7 @@ This runs five fixed, defensive controls on the existing two-role Azure lab. It 
 
 ## Run
 
-Export `AZ_SUBSCRIPTION` and `AZ_RESOURCE_GROUP` privately (do not paste them into the repository). `TARGET_VM`, `OPERATOR_VM`, and `ADMIN_USER` default to the roles in `.env.example`. Select a **new private directory outside the checkout** for the AK pin and private failure diagnostics:
+Export `AZ_SUBSCRIPTION` and `AZ_RESOURCE_GROUP` privately (do not paste them into the repository). `TARGET_VM`, `OPERATOR_VM`, `ADMIN_USER`, `TARGET_SIZE` and `OPERATOR_SIZE` default to the values in `.env.example`; export any overrides you used in your deployment. Select a **new private directory outside the checkout** for the AK pin and private failure diagnostics:
 
 ```sh
 export SHIRUDO_CONTROL_STATE="$HOME/.local/state/shirudo-controls/lab"

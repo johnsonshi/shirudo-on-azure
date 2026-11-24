@@ -88,7 +88,7 @@ class Lab:
             json.dump({"scope": self.scope, "token": token}, f)
         tags = ["--tags", f"shirudoLab={token}"]
         rg = ["-g", self.group]
-        self.az("group", "create", "-n", self.group, "-l", self.location, *tags)
+        self.az("group", "create", "-n", self.group, "-l", self.location, *tags, "purpose=shirudo-demo")
         self.owned()
         check(not self.az("resource", "list", *rg, read=True), "new group is not empty")
         self.az("network", "nsg", "create", *rg, "-n", "shirudo-nsg", *tags)

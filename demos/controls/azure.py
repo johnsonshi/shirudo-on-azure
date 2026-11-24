@@ -9,12 +9,62 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import uuid
 import zlib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.append(str(HERE))
 from common import BASE, CASES, hexstr, intended_chain, log_offset, need, sha
+
+
+def worker_inputs(root):
+    """Run Command sends only committed regular blobs, not modified files or links."""
+    git = ["git", "-C", str(root)]
+    commit = subprocess.check_output(git+["rev-parse", "HEAD"], text=True).strip()
+    files = {}
+    for name in ("common.py", "verifier.py", "target.py", "Control.java"):
+        path = "demos/controls/"+name
+        row = subprocess.check_output(git+["ls-tree", "-l", commit, "--", path], text=True).split()
+        need(len(row) == 5 and row[0] in ("100644", "100755") and row[1] == "blob" and row[4] == path
+             and int(row[3]) <= 128*1024, "missing or unsafe committed guest input")
+        files[name] = subprocess.check_output(git+["cat-file", "blob", row[2]], text=True)
+    return files
+
+
+def select_lab(az, sub, group, roles, sizes, receipt, historical=False):
+    sub_id = str(uuid.UUID(sub))
+    # The caller selected this RG. Never enumerate the subscription looking for candidates.
+    rg = az("group", "show", "-n", group)
+    need(rg["id"].lower() == f"/subscriptions/{sub_id}/resourcegroups/{group}".lower(),
+         "resource group does not match the explicitly selected scope")
+    tags = rg.get("tags") or {}
+    token = tags.get("shirudoLab")
+    if receipt.exists() or receipt.is_symlink():
+        need(receipt.is_file() and not receipt.is_symlink() and receipt.stat().st_uid == os.getuid()
+             and not receipt.stat().st_mode & 0o077, "ownership receipt is not owner-private")
+        owner = json.loads(receipt.read_bytes())
+        need(owner["scope"] == {"subscription": sub_id, "group": group, "location": rg["location"], "vms": roles}
+             and token == str(uuid.UUID(owner["token"])), "group does not match the initializer ownership receipt")
+    else:
+        need(historical and not token and tags.get("purpose") == "shirudo-demo",
+             "missing fresh-lab receipt or explicitly selected historical lab marker")
+    vms = {v["name"]: v for v in az("vm", "list", "-g", group)}
+    need(set(vms) == set(roles.values()) and len(vms) == 2, "unexpected VM roles")
+    profile = {}
+    for role, vmname in roles.items():
+        vm = vms[vmname]
+        need(not token or (vm.get("tags") or {}).get("shirudoLab") == token, "VM does not belong to this lab")
+        sku = vm["hardwareProfile"]["vmSize"]
+        need(sku == sizes[role], "VM size differs from explicitly expected role size")
+        sec = vm["securityProfile"]["uefiSettings"]
+        image = vm["storageProfile"]["imageReference"]
+        ver = image.get("exactVersion") or image["version"]
+        need(sec["vTpmEnabled"] is True and sec["secureBootEnabled"] is (role == "operator") and
+             image["publisher"].lower() == "canonical" and re.fullmatch(r"\d+\.\d+\.\d+", ver),
+             "unsupported trust or image profile")
+        profile[role] = {"size": sku, "image_version": ver, "secure_boot": sec["secureBootEnabled"], "vtpm": True}
+    return profile, vms[roles["target"]]["vmId"]
 
 
 def main():
@@ -25,6 +75,7 @@ def main():
     os.umask(0o077)
     sub = os.environ["AZ_SUBSCRIPTION"]
     group = os.environ["AZ_RESOURCE_GROUP"]
+    need(sub.strip() and group.strip(), "explicit subscription and resource group are required")
     admin = os.environ.get("ADMIN_USER", "azureuser")
     roles = {r: os.environ.get(r.upper() + "_VM", "shirudo-" + r) for r in ("target", "operator")}
     state = Path(os.environ["SHIRUDO_CONTROL_STATE"]).expanduser().resolve()
@@ -46,27 +97,16 @@ def main():
             raise ValueError("Azure call failed; see private state diagnostics")
         return json.loads(call.stdout)
 
-    matches = az("group", "list", "--tag", "purpose=shirudo-demo", "--query", "[].name")
-    need(matches == [group], "no unique matching tagged lab in explicit subscription")
-    vms = {v["name"]: v for v in az("vm", "list", "-g", group)}
-    need(set(vms) == set(roles.values()) and len(vms) == 2, "unexpected VM roles")
-    profile = {}
-    for role, vmname in roles.items():
-        vm = vms[vmname]
-        sku = vm["hardwareProfile"]["vmSize"]
-        need(sku == {"target": "Standard_D4ds_v5", "operator": "Standard_D32ds_v5"}[role], "wrong VM size")
-        sec = vm["securityProfile"]["uefiSettings"]
-        image = vm["storageProfile"]["imageReference"]
-        ver = image.get("exactVersion") or image["version"]
-        need(sec["vTpmEnabled"] is True and type(sec["secureBootEnabled"]) is bool and
-             image["publisher"].lower() == "canonical" and re.fullmatch(r"\d+\.\d+\.\d+", ver),
-             "unsupported vTPM or image profile")
-        profile[role] = {"size": sku, "image_version": ver, "secure_boot": sec["secureBootEnabled"], "vtpm": True}
-    vm_id = vms[roles["target"]]["vmId"]
+    sub = az("account", "show", "--query", "id")
+    sizes = {"target": os.environ.get("TARGET_SIZE", "Standard_D4ds_v5"),
+             "operator": os.environ.get("OPERATOR_SIZE", "Standard_D32ds_v5")}
+    profile, vm_id = select_lab(az, sub, group, roles, sizes, HERE.parents[1] / ".state/owner.json",
+                                os.environ.get("SHIRUDO_HISTORICAL_LAB") == "1")
+    inputs = worker_inputs(HERE.parents[1])
 
     def remote(role, action, **params):
-        worker = (HERE / {"operator": "verifier.py", "target": "target.py"}[role]).read_text()
-        common = (HERE / "common.py").read_text()
+        worker = inputs[{"operator": "verifier.py", "target": "target.py"}[role]]
+        common = inputs["common.py"]
         packed = base64.b64encode(json.dumps({"action": action, **params}).encode()).decode()
         # The result must have a single completion frame. ARM can return success for
         # a guest script that failed, and Run Command truncates long output.
@@ -132,7 +172,7 @@ except subprocess.CalledProcessError as exc:
         print("Baseline verified. Running the fixed local controls on the target ...", flush=True)
         result = remote("target", "measure", token=token, root=os.environ.get("SHIRUDO_TARGET_SHIELDS", "/var/tmp/shields"),
                         manifest=manifest["pairs"], cert=manifest["cert"], chain=before["chain"],
-                        java=(HERE / "Control.java").read_text())
+                        java=inputs["Control.java"])
         chain = intended_chain(before["chain"], manifest["pairs"], result["controls"])
         need(result.pop("chain") == chain, "guest did not reach independently computed final register")
         print("Fixtures stopped. Verifying the expected final register and wrong-nonce rejection ...", flush=True)

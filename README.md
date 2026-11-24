@@ -2,7 +2,7 @@
 
 Boot [upstream Shirudo](https://github.com/shirudo-dev/shirudo/tree/ff5dd643ac0b3d68310450a2cb9b668416eac036) on a disposable Azure Linux VM. An **operator** builds the kernel and the upstream packages and keeps the signing keys. A **target** boots the resulting unified kernel image (UKI), runs `shirudo init` in the initrd and uses its Azure vTPM for the measurement register. These are separate machines. The repository contains integration code, not public signing keys, prebuilt shields, or a replacement enforcement engine.
 
-Read the [Azure field notes and architecture diagrams](docs/blog/shirudo-on-azure-field-notes.md) for what was measured on the guest and what the vTPM evidence does **not** prove.
+Read the [Azure field notes and architecture diagrams](docs/blog/shirudo-on-azure-field-notes.md), [recorded results for all five controls](docs/results/azure-controls.json), or [runner guide](demos/controls/README.md). The receipt distinguishes signed load/unload, running-JVM continuity, local policy checks, and fresh operator-verified attestation. It does not demonstrate exploit prevention.
 
 ## Start here: no Azure account required
 
@@ -13,6 +13,7 @@ python3 infra/azure/lab.py plan
 python3 infra/azure/lab.py files operator
 python3 infra/azure/lab.py files target
 python3 -m unittest discover -s tools/tests
+python3 -I demos/controls/test_controls.py
 ```
 
 These commands need Python 3.9+, Git and OpenSSH (including `ssh-keygen -Y` for the tests). They do not log in, provision infrastructure, or contact a guest. The kernel/UKI recipe was booted on Azure; the workstation orchestration and its failure paths are tested offline. A healthy runtime or a benign policy check is **not** evidence that a particular CVE was prevented.
@@ -82,7 +83,7 @@ demos/controls/run.sh enroll
 demos/controls/run.sh run --receipt "$SHIRUDO_CONTROL_STATE/receipt.json"
 ```
 
-Use the runner's documented VM-name overrides if you changed either name in `.env`. The runner checks enrolled digests before load. The five-pair packaging recipe was also run on the Azure operator with the matching kernel BTF and disposable signers: all ten artifacts built and their transport manifest verified. Those artifacts were discarded, not loaded. The target measurements used previously staged artifacts; they are not a live test of provisioning or of `stage-controls`.
+Run from the checkout holding the fresh lab's `.state/owner.json`. Export any VM-name, admin-user, `OPERATOR_SIZE`, or `TARGET_SIZE` overrides you set in `.env`; the measured profile used the example sizes. The runner checks the selected group and VM ownership tags against that receipt and the enrolled digests before load. The five-pair packaging recipe was also run on the Azure operator with the matching kernel BTF and disposable signers: all ten artifacts built and their transport manifest verified. Those artifacts were discarded, not loaded. The target measurements used previously staged artifacts; they are not a live test of provisioning or of `stage-controls`.
 
 ### Stop spending
 

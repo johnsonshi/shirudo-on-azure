@@ -19,6 +19,8 @@ import build_controls
 import check_leaks
 import lab
 from resources import Lab
+sys.path.insert(0, str(ROOT / "demos/controls"))
+from azure import select_lab, worker_inputs
 
 
 class Fixture(unittest.TestCase):
@@ -119,6 +121,9 @@ class Infrastructure(Fixture):
         with patch.object(obj, "az", side_effect=fake) as az:
             obj.create()
         calls = [c.args for c in az.call_args_list]
+        group = next(c for c in calls if c[:2] == ("group", "create"))
+        self.assertIn("purpose=shirudo-demo", group)
+        self.assertIn("shirudoLab="+json.loads(obj.receipt.read_text())["token"], group)
         rules = [c for c in calls if c[:4] == ("network", "nsg", "rule", "create")]
         self.assertEqual([(r[r.index("--access")+1], r[r.index("--source-address-prefixes")+1],
                            r[r.index("--destination-port-ranges")+1]) for r in rules],
@@ -129,6 +134,37 @@ class Infrastructure(Fixture):
             self.assertEqual(c[c.index("--enable-vtpm")+1], "true")
             self.assertEqual(c[c.index("--os-disk-delete-option")+1], "Detach")
             self.assertEqual(c[c.index("--nic-delete-option")+1], "Detach")
+        def tags(call):
+            return dict(s.split("=", 1) for s in call[call.index("--tags")+1:])
+        rg = dict(id=f"/subscriptions/{obj.sub}/resourceGroups/{obj.group}", location=obj.location, tags=tags(group))
+        inventory = [dict(name=c[c.index("-n")+1], vmId=str(uuid.uuid4()), tags=tags(c),
+                          hardwareProfile={"vmSize": c[c.index("--size")+1]},
+                          securityProfile={"uefiSettings": {"vTpmEnabled": True,
+                                                            "secureBootEnabled": c[c.index("--enable-secure-boot")+1]=="true"}},
+                          storageProfile={"imageReference": {"publisher": "Canonical", "exactVersion": "1.2.3"}})
+                     for c in vms]
+        sizes = {r: self.cfg[r.upper()+"_SIZE"] for r in obj.vms}
+        def select(*, historical=False):
+            read = Mock(side_effect=[rg, inventory])
+            profile, target = select_lab(read, obj.sub, obj.group, obj.vms, sizes, obj.receipt, historical)
+            self.assertEqual([c.args for c in read.call_args_list],
+                             [("group", "show", "-n", obj.group), ("vm", "list", "-g", obj.group)])
+            self.assertEqual(target, inventory[1]["vmId"])
+            self.assertEqual(profile["operator"]["size"], sizes["operator"])
+        select()  # Real initializer-created receipt, tags and custom size; no group-list lookup.
+        with patch.dict(sizes, operator="Standard_D2ds_v5"), self.assertRaises(ValueError):
+            select()
+        with patch.dict(rg["tags"], shirudoLab=str(uuid.uuid4())), self.assertRaises(ValueError):
+            select(historical=True)
+        with patch.dict(inventory[1]["tags"], shirudoLab=str(uuid.uuid4())), self.assertRaises(ValueError):
+            select()
+        obj.receipt.unlink()
+        with self.assertRaises(ValueError):
+            select(historical=True)  # Never adopt a token-tagged group without its receipt.
+        del rg["tags"]["shirudoLab"]
+        with self.assertRaises(ValueError):
+            select()
+        select(historical=True)
 
     def test_rollback_checks_complete_inventory_before_named_deletes(self):
         obj = self.write_cfg()
@@ -155,6 +191,23 @@ class Infrastructure(Fixture):
 
 
 class Transfers(Fixture):
+    def test_run_command_bundle_ignores_dirty_and_untracked_payloads(self):
+        self.new_repo()
+        directory = self.root / "demos/controls"
+        directory.mkdir(parents=True)
+        for name in ("common.py", "target.py", "verifier.py", "Control.java"):
+            (directory / name).write_text("reviewed")
+        self.git("add", "demos")
+        self.git("commit", "-qm", "fixture")
+        (directory / "local.txt").write_text("private")
+        (directory / "target.py").unlink()
+        (directory / "target.py").symlink_to("local.txt")
+        self.assertEqual(set(worker_inputs(self.root).values()), {"reviewed"})
+        self.git("add", "demos/controls/target.py")
+        self.git("commit", "-qm", "linked input")
+        with self.assertRaises(ValueError):
+            worker_inputs(self.root)
+
     def test_package_reader_accepts_only_one_versioned_regular_app_member(self):
         expected = "app-sandbox-1.0.0/upatches/app-sandbox.upatch"
         legacy = "upatches/app-sandbox.upatch"
