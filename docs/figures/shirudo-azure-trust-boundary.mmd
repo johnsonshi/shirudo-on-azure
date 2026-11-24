@@ -62,7 +62,7 @@ flowchart LR
         STATUS --- LSM
     end
 
-    OUT_SCOPE["Out of Tested Scope: Managed AKS<br/>AKS Linux pools support vTPM, but disallow IaaS OS replacement;<br/>5 controls verified (azure-controls.json); real PHP-FPM/H2 pending; macro overhead + IG out of scope"]
+    OUT_SCOPE["Out of Tested Scope: Managed AKS<br/>AKS Linux pools support vTPM, but disallow IaaS OS replacement;<br/>2 separate 5-control receipts verified (fixtures + real PHP-FPM/H2); macro overhead, EK cert, + IG out of scope"]
 
     OP_ART ==>|"SSH relay<br/>(signed manifest + bundle)"| INIT
     OP_ART ==>|"SSH relay or<br/>Azure VM Run Command"| LSM

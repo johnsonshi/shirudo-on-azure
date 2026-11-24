@@ -26,7 +26,7 @@ flowchart TB
             direction TB
             B1["Verify: .bpf keyring checks<br/>ML-DSA-87 signed loader"]
             B2["Activate: Live BPF LSM, tracing, or XDP<br/>attach (labeled sandbox on next exec)"]
-            B3["Verified: basic load/unload + AF_ALG<br/>(allowed -> EPERM -> allowed)"]
+            B3["Verified: basic + AF_ALG (allowed -> EPERM<br/>at lab af_alg_restrict=0; later restored to 1)"]
             B1 --> B2 --> B3
         end
 
@@ -34,15 +34,15 @@ flowchart TB
             direction TB
             J1["Verify: Userspace check; seals<br/>Premain-Class JAR in /run/shirudo-java"]
             J2["Activate: Sets JAVA_TOOL_OPTIONS<br/>for new JVMs via environment.d"]
-            J3["Verified: java-base64 attach continuity +<br/>java-sql-inj empty-SQLite Statement guard"]
+            J3["Verified: Base64 continuity + JDBC guard<br/>(SQLite fixture + real H2 in-memory DB)"]
             J1 --> J2 --> J3
         end
 
         subgraph S_PHP["PHP Containment (app-sandbox)"]
             direction TB
             P1["Mechanism: BPF LSM labels<br/>httpd + php-fpm workers"]
-            P2["Verified fixture: .php EACCES vs .txt allow<br/>on php-fpm-named Python exec"]
-            P3["Limit: Does not fix PHP itself;<br/>real PHP-FPM pending; upgrade required"]
+            P2["Verified: .php EACCES vs .txt allow<br/>(Python fixture + real PHP-FPM Unix socket)"]
+            P3["Limit: Does not fix PHP itself;<br/>still upgrade PHP"]
             P1 --> P2 --> P3
         end
     end
