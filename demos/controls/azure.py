@@ -21,6 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["enroll", "run"])
     parser.add_argument("--receipt", type=Path, help="new file for a scrubbed receipt (required for run)")
+    parser.add_argument("--distro-debs", help="private target directory with the three current Ubuntu package files")
     args = parser.parse_args()
     os.umask(0o077)
     sub = os.environ["AZ_SUBSCRIPTION"]
@@ -35,7 +36,7 @@ def main():
     if args.action == "run":
         need(args.receipt and not args.receipt.exists() and args.receipt.parent.is_dir(), "supply a new --receipt path")
     else:
-        need(not pin_file.exists() and args.receipt is None, "enrollment will not replace an existing pin")
+        need(not pin_file.exists() and args.receipt is None and args.distro_debs is None, "invalid enrollment or existing pin")
 
     def az(*command):
         call = subprocess.run(["az", *command, "--subscription", sub, "--only-show-errors", "-o", "json"],
@@ -66,6 +67,8 @@ def main():
 
     def remote(role, action, **params):
         worker = (HERE / {"operator": "verifier.py", "target": "target.py"}[role]).read_text()
+        if action == "measure" and args.distro_debs is not None:
+            worker += "\n" + (HERE / "distro.py").read_text()
         common = (HERE / "common.py").read_text()
         packed = base64.b64encode(json.dumps({"action": action, **params}).encode()).decode()
         # The result must have a single completion frame. ARM can return success for
@@ -132,7 +135,7 @@ except subprocess.CalledProcessError as exc:
         print("Baseline verified. Running the fixed local controls on the target ...", flush=True)
         result = remote("target", "measure", token=token, root=os.environ.get("SHIRUDO_TARGET_SHIELDS", "/var/tmp/shields"),
                         manifest=manifest["pairs"], cert=manifest["cert"], chain=before["chain"],
-                        java=(HERE / "Control.java").read_text())
+                        java=(HERE / "Control.java").read_text(), distro=args.distro_debs)
         chain = intended_chain(before["chain"], manifest["pairs"], result["controls"])
         need(result.pop("chain") == chain, "guest did not reach independently computed final register")
         print("Fixtures stopped. Verifying the expected final register and wrong-nonce rejection ...", flush=True)

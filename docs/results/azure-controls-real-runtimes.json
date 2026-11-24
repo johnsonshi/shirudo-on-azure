@@ -1,0 +1,170 @@
+{
+  "schema": 1,
+  "measured_utc": "2026-11-24",
+  "upstream": "ff5dd643ac0b3d68310450a2cb9b668416eac036",
+  "azure": {
+    "target": {
+      "size": "Standard_D4ds_v5",
+      "image_version": "26.04.202611100",
+      "secure_boot": false,
+      "vtpm": true
+    },
+    "operator": {
+      "size": "Standard_D32ds_v5",
+      "image_version": "26.04.202611100",
+      "secure_boot": true,
+      "vtpm": true
+    }
+  },
+  "attestation": {
+    "fresh_before_and_after": true,
+    "wrong_nonce_rejected": true,
+    "bound_in": "initrd",
+    "ak_enrollment": "separate_Azure_RBAC_TOFU",
+    "operator_signed_config_root_pcr": 13,
+    "final_register": "verified_baseline_plus_planned_signed_payload_transitions",
+    "historical_intent_approved": false,
+    "ek_endorsement_verified": false,
+    "nv_writer_rsa_bits": 2048,
+    "azure_guest_attestation_service_used": false
+  },
+  "timing": {
+    "clock": "guest monotonic",
+    "operation_ms": "one signed CLI load/unload including TPM",
+    "socket_median_ns": "15 create/close or synchronous refusals after 3 warmups per family/phase",
+    "observer_delivery_measured": false,
+    "control_plane_latency_included": false
+  },
+  "controls": {
+    "basic": {
+      "status": "verified",
+      "lifecycle": "owned_pair",
+      "operation_ms": {
+        "load": 800.637,
+        "unload": 731.906
+      },
+      "before": "absent",
+      "during": "loaded_and_measured",
+      "after_unload": "absent"
+    },
+    "java-base64": {
+      "status": "verified",
+      "lifecycle": "preserved_preexisting",
+      "operation_ms": {},
+      "before": "control",
+      "after_attach": "control",
+      "same_pid_and_jvm_start": true,
+      "upstream_install_diagnostic": true,
+      "sealed_jar": true,
+      "scope": "continuity_only"
+    },
+    "app-sandbox": {
+      "status": "verified",
+      "lifecycle": "owned_pair",
+      "operation_ms": {
+        "load": 791.798,
+        "unload": 742.516
+      },
+      "fixture": "Ubuntu_PHP_FPM_one_worker_private_Unix_socket",
+      "real_php_fpm": true,
+      "first_exec_after_load": true,
+      "order": [
+        ".php",
+        ".txt"
+      ],
+      "before": [
+        "written",
+        "written"
+      ],
+      "after_load": [
+        "EACCES",
+        "written"
+      ],
+      "after_unload": [
+        "written",
+        "written"
+      ]
+    },
+    "java-sql-inj": {
+      "status": "verified",
+      "lifecycle": "owned_pair",
+      "operation_ms": {
+        "load": 756.651,
+        "unload": 744.478
+      },
+      "fixture": "Ubuntu_H2_JDBC_Statement_with_empty_in_memory_database",
+      "before": {
+        "fixed_read": 7,
+        "fixed_false_predicate": "empty"
+      },
+      "after_load_new_jvm": {
+        "fixed_read": 7,
+        "fixed_false_predicate": "policy-exception"
+      },
+      "after_unload_new_jvm": {
+        "fixed_read": 7,
+        "fixed_false_predicate": "empty"
+      },
+      "sealed_jar": true
+    },
+    "cve-2026-31431-af-alg-block": {
+      "status": "verified",
+      "lifecycle": "owned_pair",
+      "operation_ms": {
+        "load": 746.745,
+        "unload": 730.422
+      },
+      "before": {
+        "unix": {
+          "result": "allowed",
+          "n": 15,
+          "median_ns": 2096
+        },
+        "alg": {
+          "result": "allowed",
+          "n": 15,
+          "median_ns": 1952
+        }
+      },
+      "after_load": {
+        "unix": {
+          "result": "allowed",
+          "n": 15,
+          "median_ns": 2124
+        },
+        "alg": {
+          "result": "EPERM",
+          "n": 15,
+          "median_ns": 1442
+        }
+      },
+      "after_unload": {
+        "unix": {
+          "result": "allowed",
+          "n": 15,
+          "median_ns": 2111
+        },
+        "alg": {
+          "result": "allowed",
+          "n": 15,
+          "median_ns": 1929
+        }
+      },
+      "fixture": "unprivileged_unbound_socket_create_and_close"
+    }
+  },
+  "initial_count": 1,
+  "shield_set_restored": true,
+  "no_new_tcp_listeners": true,
+  "legacy_service_stopped_disabled": true,
+  "legacy_unit_state_unchanged": "failed",
+  "port_8080_closed": true,
+  "af_alg_restrict_unchanged": 0,
+  "jdk_package": "25.0.5.1+2-1~26.04.1",
+  "distro_packages": {
+    "php8.5-fpm": "8.5.4-0ubuntu1.6",
+    "libargon2-1": "0~20190702+dfsg-5",
+    "libh2-java": "2.2.220-1build1"
+  },
+  "kernel": "7.4-shirudo-azure-20261124"
+}

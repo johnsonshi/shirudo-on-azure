@@ -160,9 +160,11 @@ def base64_probe(work, shield):
             "upstream_install_diagnostic": True, "sealed_jar": True, "scope": "continuity_only"}
 
 
-def jdbc_probe(work, guarded):
+def jdbc_probe(work, guarded, real=False):
     args = ["-javaagent:" + sealed_agent("java-sql-inj")] if guarded else []
-    p = subprocess.run([*NOBODY, "/usr/bin/java", *args, "-cp", str(work), "Control", "jdbc"],
+    classpath = str(work) + (":" + str(work / "h2.jar") if real else "")
+    p = subprocess.run(["unshare", "--net", "--", *NOBODY, "/usr/bin/java", *args, "-cp", classpath,
+                        "Control", "h2" if real else "jdbc"],
                        cwd=work, capture_output=True, text=True, timeout=45)
     need(p.returncode == 0 and "fixed-read=7" in p.stdout.splitlines(), "normal JDBC read failed")
     expected = "policy-exception" if guarded else "empty"
@@ -215,8 +217,11 @@ def measure(args):
                          sha(Path("/var/lib/shirudo/upatches/java-base64.upatch").read_bytes()) == args["manifest"][name][0],
                          "existing base64 artifact differs from operator approval")
         java_version = None
+        distro = None
         if any(n not in controls for n in ("java-base64", "java-sql-inj")):
             java_version = jdk()
+            if args.get("distro"):
+                distro = distro_inputs(args["distro"], work)
             src = work / "Control.java"
             src.write_text(args["java"])
             output("/usr/bin/javac", "-d", work, src)
@@ -277,27 +282,30 @@ def measure(args):
                 private_sbin.mkdir(mode=0o755)
                 private_sbin.chmod(0o755)
                 executable = Path("/usr/sbin/php-fpm-shirudo-control")
-                shutil.copyfile(Path("/usr/bin/python3").resolve(), private_sbin / executable.name)
+                shutil.copyfile(work / "fpm" if distro else Path("/usr/bin/python3").resolve(), private_sbin / executable.name)
                 (private_sbin / executable.name).chmod(0o755)
                 output("mount", "--bind", private_sbin, "/usr/sbin")
                 try:
-                    before = sandbox_probe(executable, work)
+                    run = fpm_probe if distro else sandbox_probe
+                    before = run(executable, work)
                     with shield(name, timings):
-                        after = sandbox_probe(executable, work)
-                    restored = sandbox_probe(executable, work)
+                        after = run(executable, work)
+                    restored = run(executable, work)
                     need(before == restored == ["written", "written"] and after == ["EACCES", "written"],
                          "sandbox did not produce matched writes")
                 finally:
                     output("umount", "/usr/sbin")
-                result = {"fixture": "private_PHP_FPM_name_on_distro_Python", "real_php_fpm": False,
+                result = {"fixture": "Ubuntu_PHP_FPM_one_worker_private_Unix_socket" if distro else
+                          "private_PHP_FPM_name_on_distro_Python", "real_php_fpm": bool(distro),
                           "first_exec_after_load": True, "order": [".php", ".txt"],
                           "before": before, "after_load": after, "after_unload": restored}
             elif name == "java-sql-inj":
-                before = jdbc_probe(work, False)
+                before = jdbc_probe(work, False, bool(distro))
                 with shield(name, timings):
-                    after = jdbc_probe(work, True)
-                restored = jdbc_probe(work, False)
-                result = {"fixture": "mock_JDBC_Statement_with_empty_in_memory_SQLite", "before": before,
+                    after = jdbc_probe(work, True, bool(distro))
+                restored = jdbc_probe(work, False, bool(distro))
+                result = {"fixture": "Ubuntu_H2_JDBC_Statement_with_empty_in_memory_database" if distro else
+                          "mock_JDBC_Statement_with_empty_in_memory_SQLite", "before": before,
                           "after_load_new_jvm": after, "after_unload_new_jvm": restored, "sealed_jar": True}
             else:
                 baseline = af_probe()
@@ -323,7 +331,7 @@ def measure(args):
     return {"controls": controls, "initial_count": len(initial), "shield_set_restored": True, "no_new_tcp_listeners": True,
             "legacy_service_stopped_disabled": True, "legacy_unit_state_unchanged": listening[1],
             "port_8080_closed": True, "af_alg_restrict_unchanged": int(initial_sysctl),
-            "jdk_package": java_version, "kernel": os.uname().release, "chain": chain}
+            "jdk_package": java_version, "distro_packages": distro, "kernel": os.uname().release, "chain": chain}
 
 
 def target(args):

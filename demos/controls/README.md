@@ -1,6 +1,8 @@
 # Live upstream Shirudo controls
 
-This runs five fixed, defensive controls on the existing two-role Azure lab. It uses Azure RBAC Run Command, not SSH. Nothing listens for test traffic. There is no package downgrade, sysctl change, service start, reboot, network-rule change, registry, or backend. Run it on a dedicated lab: a loaded upstream shield applies to the guest, not just to the fixture.
+This runs five fixed, defensive controls on the existing two-role Azure lab. It uses Azure RBAC Run Command, not SSH. No test opens an IP listener. There is no package downgrade, sysctl change, system service start, reboot, network-rule change, registry, or backend. Run it on a dedicated lab: a loaded upstream shield applies to the guest, not just to the fixture.
+
+Measured receipts: [fixed fixtures](../../docs/results/azure-controls.json) and [real PHP-FPM and H2 JDBC](../../docs/results/azure-controls-real-runtimes.json). The latter used a private Unix socket, never an IP listener.
 
 | Control | What to look for |
 |---|---|
@@ -36,6 +38,17 @@ demos/controls/run.sh enroll                      # once, separately, through au
 demos/controls/run.sh run --receipt /tmp/controls-1.json
 demos/controls/run.sh run --receipt /tmp/controls-2.json
 ```
+
+### Optional: real PHP-FPM and an H2 JDBC driver
+
+Stage three current Ubuntu candidate `.deb` files in a root-owned directory on the target using the lab's approved package or management channel. Use exactly `php8.5-fpm.deb`, `libargon2-1.deb` and `libh2-java.deb` as filenames. Run:
+
+```sh
+demos/controls/run.sh run --distro-debs /path/to/private/package-staging \
+  --receipt /tmp/controls-real-runtimes.json
+```
+
+This mode fails rather than silently substituting the fixtures. It matches each package's full SHA-256, name and version to the distro APT candidate and extracts only the PHP-FPM executable, its Argon2 shared library and the H2 driver JAR. It does not install a package or enable a daemon. The real PHP-FPM master and its single worker run unprivileged in a private network namespace; the only request is fixed FastCGI over a mode-0600 Unix socket. A fresh pool executes the labeled binary in each phase. Its two files are outside the script directory. The real H2 JDBC `Statement` executes the same two fixed reads in a fresh, empty, in-memory database with no database listener. Both modes use the same operator-approved upstream shields.
 
 `enroll` pins the target VM identity and AK name, refusing to replace an existing pin. `run` requests independent 32-byte challenges before and after the suite; it never pins a key from either of the documents under test. Each document must verify offline **on the operator**, including the approved config root in PCR 13 and an initrd binding. Each must also fail verification on a different nonce. The final register must equal the verified baseline extended by exactly the expected control events and operator-approved payloads. A previous measured history is **not** a declaration of desired state. This is authenticated-channel TOFU, not endorsement-chain validation, Azure Attestation, or an independent allowlist for every boot PCR. The application and socket outcomes come from guest probes, not directly from the TPM.
 

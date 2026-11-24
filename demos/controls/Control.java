@@ -12,6 +12,23 @@ final class Control {
     static final String READ = "SELECT 7";
     static final String MARKER = "SELECT 7 WHERE 8 > 3 AND 4 = 5";
 
+    static void h2() throws Exception {
+        try (var db = java.sql.DriverManager.getConnection("jdbc:h2:mem:control"); var statement = db.createStatement()) {
+            db.setReadOnly(true);
+            try (var rows = statement.executeQuery(READ)) {
+                if (!rows.next() || rows.getInt(1) != 7 || rows.next()) throw new AssertionError();
+            }
+            System.out.println("fixed-read=7");
+            try (var rows = statement.executeQuery(MARKER)) {
+                if (rows.next()) throw new AssertionError();
+                System.out.println("fixed-marker=empty");
+            } catch (SecurityException ex) {
+                if (!"Request blocked by RASP: Malicious SQL patterns detected.".equals(ex.getMessage())) throw ex;
+                System.out.println("fixed-marker=policy-exception");
+            }
+        }
+    }
+
     static void jdbc() throws Exception {
         // Real, empty SQLite in memory; the Statement adapter is a fixture, not a JDBC driver.
         // Its two constants are the entire protocol. It never accepts general SQL.
@@ -41,6 +58,7 @@ final class Control {
     }
 
     public static void main(String[] args) throws Exception {
+        if (args.length == 1 && args[0].equals("h2")) { h2(); return; }
         if (args.length == 1 && args[0].equals("jdbc")) { jdbc(); return; }
         if (args.length != 1 || !args[0].equals("base64")) throw new IllegalArgumentException();
         try (var input = new BufferedReader(new InputStreamReader(System.in))) {
