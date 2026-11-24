@@ -19,11 +19,11 @@ flowchart LR
         OP_KEYS["Role 1: Operator Signing Keypairs<br/>Separate bpf + config ML-DSA-87 keys<br/>(Keys stay on operator VM)"]
         OP_BUILD["Azure Compatibility Build<br/>bpf-next + Hyper-V built-ins<br/>TPM_NV_RSA_BITS = 2048"]
         OP_ART["Signed Artifacts<br/>dm-verity runtime + config images<br/>Signed .upatch load + unload"]
-        OP_VER["Offline Verifier (attest verify)<br/>Fresh nonce + Quote + NV_Certify<br/>Replays eventlog + RSA-2048 NV Name"]
+        OP_VER["Offline Verifier (attest verify)<br/>Before + after fresh nonces; wrong nonce rejected<br/>Checks PCR 13 config root + planned transitions"]
         OP_KEYS --> OP_BUILD --> OP_ART
     end
 
-    subgraph TGT["Target VM (Standard_D4ds_v5, Base 26.04.202611100, No Inbound App Ports)"]
+    subgraph TGT["Target VM (Standard_D4ds_v5, Base 26.04.202611100, Kernel 7.4-shirudo-azure-20261124)"]
         direction TB
 
         subgraph BOOT["Boot + Initrd (Caveat: Secure Boot OFF, Unsigned UKI)"]
@@ -51,7 +51,7 @@ flowchart LR
             direction TB
             NVW["Role 3: Per-Boot NV Writer<br/>RSA-2048 owner primary<br/>(Stock RSA-3072 -> TPM_RC_VALUE)"]
             REG["Measurement Register 0x01818E00<br/>Policy-gated TPM2_NV_Extend"]
-            AK["Role 2: Attestation Key (AK)<br/>ECDSA P-256 signs Quote + NV_Certify<br/>(Proves state, not VM identity)"]
+            AK["Role 2: Attestation Key (AK)<br/>Separate Azure RBAC TOFU ECDSA P-256 AK<br/>(No EK cert or historical-intent assurance)"]
             NVW --> REG --> AK
         end
 
@@ -62,7 +62,7 @@ flowchart LR
         STATUS --- LSM
     end
 
-    OUT_SCOPE["Out of Tested Scope: Managed AKS<br/>AKS Linux pools support vTPM, but disallow IaaS OS replacement;<br/>Pending receipts: AF_ALG control, real PHP-FPM supplement, overhead, IG"]
+    OUT_SCOPE["Out of Tested Scope: Managed AKS<br/>AKS Linux pools support vTPM, but disallow IaaS OS replacement;<br/>5 controls verified (azure-controls.json); real PHP-FPM/H2 pending; macro overhead + IG out of scope"]
 
     OP_ART ==>|"SSH relay<br/>(signed manifest + bundle)"| INIT
     OP_ART ==>|"SSH relay or<br/>Azure VM Run Command"| LSM
