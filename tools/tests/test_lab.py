@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 import uuid
@@ -20,7 +21,8 @@ import check_leaks
 import lab
 from resources import Lab
 sys.path.insert(0, str(ROOT / "demos/controls"))
-from azure import select_lab, worker_inputs
+from azure import select_lab, worker_inputs, worker_source
+from distro import ubuntu_candidate
 
 
 class Fixture(unittest.TestCase):
@@ -191,6 +193,46 @@ class Infrastructure(Fixture):
 
 
 class Transfers(Fixture):
+    def test_distro_helper_only_reaches_the_opted_in_target_measurement(self):
+        self.new_repo()
+        directory = self.root / "demos/controls"
+        directory.mkdir(parents=True)
+        for name in ("common.py", "target.py", "verifier.py", "Control.java", "distro.py"):
+            (directory / name).write_text("reviewed "+name)
+        self.git("add", "demos")
+        self.git("commit", "-qm", "fixture")
+        (directory / "distro.py").write_text("unstaged secrets")
+        plain = worker_inputs(self.root)
+        opted = worker_inputs(self.root, include_distro=True)
+        self.assertNotIn("distro.py", plain)
+        for inputs, role, action, expect in ((plain, "target", "measure", False),
+                                              (opted, "target", "enroll", False),
+                                              (opted, "target", "evidence", False),
+                                              (opted, "operator", "verify", False),
+                                              (opted, "target", "measure", True)):
+            source = worker_source(inputs, role, action)
+            self.assertNotIn("unstaged secrets", source)
+            self.assertEqual("reviewed distro.py" in source, expect)
+        (directory / "distro.py").unlink()
+        (directory / "distro.py").symlink_to("secret")
+        self.git("add", "demos/controls/distro.py")
+        self.git("commit", "-qm", "linked input")
+        self.assertNotIn("distro.py", worker_inputs(self.root))
+        with self.assertRaises(ValueError):
+            worker_inputs(self.root, include_distro=True)
+
+    def test_distro_candidate_rejects_unsigned_foreign_and_installed_only_origins(self):
+        def origin(name="Ubuntu", trusted=True, archive="resolute-updates"):
+            return SimpleNamespace(origin=name, label=name, trusted=trusted, archive=archive)
+        def candidate(*origins):
+            c = SimpleNamespace(origins=origins, version="1.2.3", sha256="a"*64)
+            return ubuntu_candidate({"fixture": SimpleNamespace(candidate=c)}, "fixture")
+        self.assertEqual(candidate(origin()), ("1.2.3", "a"*64))
+        for origins in ([], [origin(trusted=False)], [origin("other")], [origin(archive="now")],
+                        [origin(), origin("another archive")]):
+            with self.subTest(origins=origins), self.assertRaises(ValueError):
+                candidate(*origins)
+
     def test_run_command_bundle_ignores_dirty_and_untracked_payloads(self):
         self.new_repo()
         directory = self.root / "demos/controls"

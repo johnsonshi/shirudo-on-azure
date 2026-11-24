@@ -1,6 +1,8 @@
 # Live upstream Shirudo controls
 
-This runs five fixed, defensive controls on the existing two-role Azure lab. It uses Azure RBAC Run Command, not SSH. Nothing listens for test traffic. There is no package downgrade, sysctl change, service start, reboot, network-rule change, registry, or backend. Run it on a dedicated lab: a loaded upstream shield applies to the guest, not just to the fixture.
+This runs five fixed, defensive controls on the existing two-role Azure lab. It uses Azure RBAC Run Command, not SSH. No test opens an IP listener. There is no package downgrade, sysctl change, system service start, reboot, network-rule change, registry, or backend. Run it on a dedicated lab: a loaded upstream shield applies to the guest, not just to the fixture.
+
+Measured receipts: [fixed fixtures](../../docs/results/azure-controls.json) and [real PHP-FPM and H2 JDBC](../../docs/results/azure-controls-real-runtimes.json). The latter used a private Unix socket, never an IP listener.
 
 | Control | What to look for |
 |---|---|
@@ -36,6 +38,42 @@ demos/controls/run.sh enroll                      # once, separately, through au
 demos/controls/run.sh run --receipt /tmp/controls-1.json
 demos/controls/run.sh run --receipt /tmp/controls-2.json
 ```
+
+### Optional: real PHP-FPM and an H2 JDBC driver
+
+On the **target**, use its configured Ubuntu archive with normal signature verification and the distribution's `python3-apt` module. Refresh the index and download only the three current candidate packages. This does not install them, run maintainer scripts, or change the system service configuration:
+
+```sh
+sudo bash <<'STAGE'
+set -euo pipefail
+umask 077
+export LC_ALL=C
+/usr/bin/python3 -I -c 'import apt'
+apt-get -o APT::Update::Error-Mode=any update -q
+stage=$(mktemp -d /var/tmp/shirudo-runtime-debs.XXXXXXXX)
+cd "$stage"
+for pkg in php8.5-fpm libargon2-1 libh2-java; do
+    version=$(apt-cache policy "$pkg" | awk '$1 == "Candidate:" {print $2}')
+    [[ -n "$version" && "$version" != '(none)' ]]
+    apt-get download "$pkg=$version"
+    files=("${pkg}"_*.deb)
+    [[ ${#files[@]} == 1 && -f "${files[0]}" ]]
+    mv -- "${files[0]}" "$pkg.deb"
+done
+printf 'Target staging directory: %s\n' "$stage"
+STAGE
+```
+
+On the **workstation**, use the printed absolute **target** path (never a local directory). Default fixture runs do not need these packages or send `distro.py`:
+
+```sh
+demos/controls/run.sh run --distro-debs /path/to/private/package-staging \
+  --receipt "$SHIRUDO_CONTROL_STATE/real-runtimes.json"
+```
+
+This mode fails rather than silently substituting the fixtures. It matches each package's full SHA-256, name and version to the distro APT candidate and extracts only the PHP-FPM executable, its Argon2 shared library and the H2 driver JAR. It does not install a package or enable a daemon. The real PHP-FPM master and its single worker run unprivileged in a private network namespace; the only request is fixed FastCGI over a mode-0600 Unix socket. A fresh pool executes the labeled binary in each phase. Its two files are outside the script directory. The real H2 JDBC `Statement` executes the same two fixed reads in a fresh, empty, in-memory database with no database listener. Both modes use the same operator-approved upstream shields.
+
+After the run, on the target remove only those three named `.deb` files from the printed staging directory, then remove that empty directory with `rmdir`. Do not copy a build tree or change an APT trust setting to make a candidate pass.
 
 `enroll` pins the target VM identity and AK name, refusing to replace an existing pin. `run` requests independent 32-byte challenges before and after the suite; it never pins a key from either of the documents under test. Each document must verify offline **on the operator**, including the approved config root in PCR 13 and an initrd binding. Each must also fail verification on a different nonce. The final register must equal the verified baseline extended by exactly the expected control events and operator-approved payloads. A previous measured history is **not** a declaration of desired state. This is authenticated-channel TOFU, not endorsement-chain validation, Azure Attestation, or an independent allowlist for every boot PCR. The application and socket outcomes come from guest probes, not directly from the TPM.
 

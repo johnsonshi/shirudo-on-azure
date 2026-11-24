@@ -18,18 +18,26 @@ sys.path.append(str(HERE))
 from common import BASE, CASES, hexstr, intended_chain, log_offset, need, sha
 
 
-def worker_inputs(root):
+def worker_inputs(root, *, include_distro=False):
     """Run Command sends only committed regular blobs, not modified files or links."""
     git = ["git", "-C", str(root)]
     commit = subprocess.check_output(git+["rev-parse", "HEAD"], text=True).strip()
     files = {}
-    for name in ("common.py", "verifier.py", "target.py", "Control.java"):
+    names = ("common.py", "verifier.py", "target.py", "Control.java")
+    for name in names + (("distro.py",) if include_distro else ()):
         path = "demos/controls/"+name
         row = subprocess.check_output(git+["ls-tree", "-l", commit, "--", path], text=True).split()
         need(len(row) == 5 and row[0] in ("100644", "100755") and row[1] == "blob" and row[4] == path
              and int(row[3]) <= 128*1024, "missing or unsafe committed guest input")
         files[name] = subprocess.check_output(git+["cat-file", "blob", row[2]], text=True)
     return files
+
+
+def worker_source(inputs, role, action):
+    source = inputs[{"operator": "verifier.py", "target": "target.py"}[role]]
+    if role == "target" and action == "measure" and "distro.py" in inputs:
+        source += "\n" + inputs["distro.py"]
+    return inputs["common.py"] + "\n" + source
 
 
 def select_lab(az, sub, group, roles, sizes, receipt, historical=False):
@@ -71,6 +79,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["enroll", "run"])
     parser.add_argument("--receipt", type=Path, help="new file for a scrubbed receipt (required for run)")
+    parser.add_argument("--distro-debs", help="private target directory with the three current Ubuntu package files")
     args = parser.parse_args()
     os.umask(0o077)
     sub = os.environ["AZ_SUBSCRIPTION"]
@@ -85,8 +94,9 @@ def main():
     pin_file = state / "enrolled.json"
     if args.action == "run":
         need(args.receipt and not args.receipt.exists() and args.receipt.parent.is_dir(), "supply a new --receipt path")
+        need(args.distro_debs is None or Path(args.distro_debs).is_absolute(), "--distro-debs needs an absolute target path")
     else:
-        need(not pin_file.exists() and args.receipt is None, "enrollment will not replace an existing pin")
+        need(not pin_file.exists() and args.receipt is None and args.distro_debs is None, "invalid enrollment or existing pin")
 
     def az(*command):
         call = subprocess.run(["az", *command, "--subscription", sub, "--only-show-errors", "-o", "json"],
@@ -102,15 +112,13 @@ def main():
              "operator": os.environ.get("OPERATOR_SIZE", "Standard_D32ds_v5")}
     profile, vm_id = select_lab(az, sub, group, roles, sizes, HERE.parents[1] / ".state/owner.json",
                                 os.environ.get("SHIRUDO_HISTORICAL_LAB") == "1")
-    inputs = worker_inputs(HERE.parents[1])
+    inputs = worker_inputs(HERE.parents[1], include_distro=args.distro_debs is not None)
 
     def remote(role, action, **params):
-        worker = inputs[{"operator": "verifier.py", "target": "target.py"}[role]]
-        common = inputs["common.py"]
         packed = base64.b64encode(json.dumps({"action": action, **params}).encode()).decode()
         # The result must have a single completion frame. ARM can return success for
         # a guest script that failed, and Run Command truncates long output.
-        code = common + "\n" + worker + "\n" + f"""
+        code = worker_source(inputs, role, action) + "\n" + f"""
 try:
     frame({role}(json.loads(base64.b64decode('{packed}'))))
 except subprocess.CalledProcessError as exc:
@@ -172,7 +180,7 @@ except subprocess.CalledProcessError as exc:
         print("Baseline verified. Running the fixed local controls on the target ...", flush=True)
         result = remote("target", "measure", token=token, root=os.environ.get("SHIRUDO_TARGET_SHIELDS", "/var/tmp/shields"),
                         manifest=manifest["pairs"], cert=manifest["cert"], chain=before["chain"],
-                        java=inputs["Control.java"])
+                        java=inputs["Control.java"], distro=args.distro_debs)
         chain = intended_chain(before["chain"], manifest["pairs"], result["controls"])
         need(result.pop("chain") == chain, "guest did not reach independently computed final register")
         print("Fixtures stopped. Verifying the expected final register and wrong-nonce rejection ...", flush=True)

@@ -2,7 +2,7 @@
 
 Boot [upstream Shirudo](https://github.com/shirudo-dev/shirudo/tree/ff5dd643ac0b3d68310450a2cb9b668416eac036) on a disposable Azure Linux VM. An **operator** builds the kernel and the upstream packages and keeps the signing keys. A **target** boots the resulting unified kernel image (UKI), runs `shirudo init` in the initrd and uses its Azure vTPM for the measurement register. These are separate machines. The repository contains integration code, not public signing keys, prebuilt shields, or a replacement enforcement engine.
 
-Read the [Azure field notes and architecture diagrams](docs/blog/shirudo-on-azure-field-notes.md), [recorded results for all five controls](docs/results/azure-controls.json), or [runner guide](demos/controls/README.md). The receipt distinguishes signed load/unload, running-JVM continuity, local policy checks, and fresh operator-verified attestation. It does not demonstrate exploit prevention.
+Read the [Azure field notes and architecture diagrams](docs/blog/shirudo-on-azure-field-notes.md) or the [runner guide](demos/controls/README.md). There are two separate receipts: the [five fixed controls](docs/results/azure-controls.json) and the [repeat with Ubuntu PHP-FPM and H2 JDBC](docs/results/azure-controls-real-runtimes.json). The latter used one private Unix socket and an empty in-memory database. These are bounded policy and continuity checks with fresh operator-verified attestation, not proof of exploit prevention.
 
 ## Start here: no Azure account required
 
