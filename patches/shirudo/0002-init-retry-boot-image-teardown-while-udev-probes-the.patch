@@ -1,0 +1,90 @@
+From 4b475c78740ee96f61c0602544197f6403b5819e Mon Sep 17 00:00:00 2001
+From: Johnson Shi <13926417+johnsonshi@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 19:39:30 -0800
+Subject: [PATCH 2/2] init: retry boot image teardown while udev probes the
+ mappings
+
+image_boot_keys_close() unmounts the boot runtime and config candidate
+and removes their dm-verity mappings once. In a generic (--no-hostonly)
+initrd, udev's dm, LVM and multipath rules probe each new dm device, and
+on an Azure VM init met EBUSY there on one boot in two, which ends init
+before the guards attach. Retry EBUSY for up to a second, as
+remove_candidate() does for the update path.
+---
+ util/image_runtime.c | 47 ++++++++++++++++++++++++++++++++++++--------
+ 1 file changed, 39 insertions(+), 8 deletions(-)
+
+diff --git a/util/image_runtime.c b/util/image_runtime.c
+index 3402dde..ed60681 100644
+--- a/util/image_runtime.c
++++ b/util/image_runtime.c
+@@ -961,6 +961,39 @@ int image_boot_keys(struct trusted_set *set)
+ 	return 0;
+ }
+ 
++/*
++ * udev probes a new dm device (blkid, the dm and LVM rules of a generic
++ * initrd) while init still holds its boot mappings, so a removal can meet
++ * EBUSY for a moment. Retry for up to a second, as remove_candidate() does.
++ */
++static int remove_boot_mapping(struct dm_verity *device)
++{
++	__u32 attempt;
++	int ret;
++
++	for (attempt = 0; attempt < 100; attempt++) {
++		ret = dm_verity_remove(device, false);
++		if (ret != -EBUSY)
++			return ret;
++		nanosleep(&(struct timespec){ .tv_nsec = 10000000 }, NULL);
++	}
++	return ret;
++}
++
++static int umount_boot(const char *dir)
++{
++	__u32 attempt;
++
++	for (attempt = 0; attempt < 100; attempt++) {
++		if (!umount(dir) || errno == EINVAL || errno == ENOENT)
++			return 0;
++		if (errno != EBUSY)
++			return -errno;
++		nanosleep(&(struct timespec){ .tv_nsec = 10000000 }, NULL);
++	}
++	return -EBUSY;
++}
++
+ int image_boot_keys_close(void)
+ {
+ 	int ret = 0, err;
+@@ -972,20 +1005,18 @@ int image_boot_keys_close(void)
+ 		close(image.candidate_fd);
+ 	image.candidate_fd = -1;
+ 	close_config_certificates();
+-	if (umount(CONFIG_CANDIDATE_DIR) && errno != EINVAL &&
+-	    errno != ENOENT)
+-		ret = -errno;
++	ret = umount_boot(CONFIG_CANDIDATE_DIR);
+ 	if (image.candidate_device.name[0]) {
+-		err = dm_verity_remove(&image.candidate_device, false);
++		err = remove_boot_mapping(&image.candidate_device);
+ 		if (!ret && err && err != -ENXIO && err != -ENODEV)
+ 			ret = err;
+ 	}
+ 	config_image_close(&image.candidate);
+-	if (umount(RUNTIME_DIR) && errno != EINVAL && errno != ENOENT &&
+-	    !ret)
+-		ret = -errno;
++	err = umount_boot(RUNTIME_DIR);
++	if (!ret)
++		ret = err;
+ 	if (image.boot_runtime.name[0]) {
+-		err = dm_verity_remove(&image.boot_runtime, false);
++		err = remove_boot_mapping(&image.boot_runtime);
+ 		if (!ret && err && err != -ENXIO && err != -ENODEV)
+ 			ret = err;
+ 	}
+-- 
+2.56.1
+

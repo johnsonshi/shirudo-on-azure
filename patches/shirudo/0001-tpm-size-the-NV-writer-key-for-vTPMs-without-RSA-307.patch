@@ -1,0 +1,119 @@
+From ebbd9e9e6134131ec3c727e436479530cb30810c Mon Sep 17 00:00:00 2001
+From: Johnson Shi <13926417+johnsonshi@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 19:07:20 -0800
+Subject: [PATCH 1/2] tpm: size the NV writer key for vTPMs without RSA-3072
+
+The Azure (Hyper-V) vTPM implements RSA-2048 and ECC P-256/P-384 but
+answers TPM2_CreatePrimary for an RSA-3072 key with TPM_RC_VALUE, so
+shirudo init cannot create the key that authorizes writes to the
+measurement register. Take the key size from TPM_NV_RSA_BITS and build
+Azure targets and their operator with 2048.
+---
+ builtin-attest.c      |  2 +-
+ builtin-init.c        |  2 +-
+ include/shirudo/tpm.h | 11 ++++++++++-
+ util/identity.h       |  3 ++-
+ util/tpm.c            |  4 ++--
+ util/tpm_wire.c       |  2 +-
+ 6 files changed, 17 insertions(+), 7 deletions(-)
+
+diff --git a/builtin-attest.c b/builtin-attest.c
+index d00f2de..c46b2be 100644
+--- a/builtin-attest.c
++++ b/builtin-attest.c
+@@ -393,7 +393,7 @@ static int cmd_attest_predict(int argc, const char **argv)
+ 		case PREDICT_WRITER_PUBLIC:
+ 			if (hex_decode(p.value, writer_public,
+ 				       sizeof(writer_public))) {
+-				opt_usage(&p, "invalid RSA-3072 --writer-public");
++				opt_usage(&p, "invalid RSA-%d --writer-public", TPM_NV_RSA_BITS);
+ 				goto out;
+ 			}
+ 			have_writer = true;
+diff --git a/builtin-init.c b/builtin-init.c
+index ebc36fe..49ebe0d 100644
+--- a/builtin-init.c
++++ b/builtin-init.c
+@@ -703,7 +703,7 @@ static int identity_build(struct identity *id)
+ 		return err;
+ 	err = nv_writer_create(id->nv_writer_seed, id->nv_writer_public);
+ 	if (err) {
+-		pr_err("init: create TPM RSA-3072 NV writer: %s", strerror(-err));
++		pr_err("init: create TPM RSA-%d NV writer: %s", TPM_NV_RSA_BITS, strerror(-err));
+ 		return err;
+ 	}
+ 	err = record_ek_name(id);
+diff --git a/include/shirudo/tpm.h b/include/shirudo/tpm.h
+index 7569b72..4351ae3 100644
+--- a/include/shirudo/tpm.h
++++ b/include/shirudo/tpm.h
+@@ -3,7 +3,16 @@
+ #ifndef SHIRUDO_TPM_TYPES_H
+ #define SHIRUDO_TPM_TYPES_H
+ 
+-#define TPM_NV_RSA_BYTES		384
++/*
++ * The RSA key that authorizes writes to the measurement register.
++ * shirudo uses RSA-3072. The Azure (Hyper-V) vTPM implements RSA-2048 but
++ * refuses RSA-3072 with TPM_RC_VALUE, so builds for Azure targets use 2048.
++ * The operator must be built with the same size to verify the evidence.
++ */
++#ifndef TPM_NV_RSA_BITS
++#define TPM_NV_RSA_BITS			2048
++#endif
++#define TPM_NV_RSA_BYTES		(TPM_NV_RSA_BITS / 8)
+ #define TPM_NAME_LEN			34	/* nameAlg and a SHA-256 */
+ #define TPM_CC_NV_EXTEND		0x00000136u
+ #define TPM_NV_RSA_PUBLIC_AREA_LEN	(24 + TPM_NV_RSA_BYTES)
+diff --git a/util/identity.h b/util/identity.h
+index cd6aa35..ce8d0ba 100644
+--- a/util/identity.h
++++ b/util/identity.h
+@@ -75,7 +75,8 @@ struct task_policy {
+ 
+ BUILD_BUG_ON(sizeof(struct device_authority) != 48);
+ BUILD_BUG_ON(sizeof(struct task_authority) != 8);
+-BUILD_BUG_ON(sizeof(struct identity) != 648);
++/* 648 bytes with the RSA-3072 writer key: 264 plus the modulus. */
++BUILD_BUG_ON(sizeof(struct identity) != 264 + TPM_NV_RSA_BYTES);
+ BUILD_BUG_ON(sizeof(struct task_policy) != 16);
+ 
+ /* The bpffs mount init made, which the unmount guard keeps mounted. */
+diff --git a/util/tpm.c b/util/tpm.c
+index ef140b6..b289b62 100644
+--- a/util/tpm.c
++++ b/util/tpm.c
+@@ -568,7 +568,7 @@ static int tpm_writer_primary(struct tpm *t,
+ 	p->parameters.rsaDetail.symmetric.algorithm = TPM2_ALG_NULL;
+ 	p->parameters.rsaDetail.scheme.scheme = TPM2_ALG_RSASSA;
+ 	p->parameters.rsaDetail.scheme.details.rsassa.hashAlg = TPM2_ALG_SHA256;
+-	p->parameters.rsaDetail.keyBits = 3072;
++	p->parameters.rsaDetail.keyBits = TPM_NV_RSA_BITS;
+ 	p->parameters.rsaDetail.exponent = 65537;
+ 	p->unique.rsa.size = TPM_DIGEST_LEN;
+ 	memcpy(p->unique.rsa.buffer, seed, TPM_DIGEST_LEN);
+@@ -600,7 +600,7 @@ static int tpm_writer_primary(struct tpm *t,
+ 	    p->parameters.rsaDetail.symmetric.algorithm != TPM2_ALG_NULL ||
+ 	    p->parameters.rsaDetail.scheme.scheme != TPM2_ALG_RSASSA ||
+ 	    p->parameters.rsaDetail.scheme.details.rsassa.hashAlg != TPM2_ALG_SHA256 ||
+-	    p->parameters.rsaDetail.keyBits != 3072 ||
++	    p->parameters.rsaDetail.keyBits != TPM_NV_RSA_BITS ||
+ 	    p->parameters.rsaDetail.exponent != 65537 ||
+ 	    p->unique.rsa.size != TPM_NV_RSA_BYTES) {
+ 		err = -EPROTO;
+diff --git a/util/tpm_wire.c b/util/tpm_wire.c
+index 54ecf3b..86be622 100644
+--- a/util/tpm_wire.c
++++ b/util/tpm_wire.c
+@@ -167,7 +167,7 @@ void tpm_writer_public(const __u8 modulus[TPM_NV_RSA_BYTES],
+ 	put_be16(out + 10, TPM_ALG_NULL);	/* symmetric.algorithm */
+ 	put_be16(out + 12, TPM_ALG_RSASSA);	/* scheme.scheme */
+ 	put_be16(out + 14, TPM_ALG_SHA256);	/* scheme hash */
+-	put_be16(out + 16, 3072);		/* RSA keyBits */
++	put_be16(out + 16, TPM_NV_RSA_BITS);	/* RSA keyBits */
+ 	put_be32(out + 18, 65537);	/* RSA exponent F4: 2^16 + 1. */
+ 	/* unique.rsa: two-byte size at offset 22, public-key bytes at offset 24. */
+ 	tpm_put2b(out + 22, modulus, TPM_NV_RSA_BYTES);
+-- 
+2.56.1
+

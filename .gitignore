@@ -1,0 +1,63 @@
+# Default-deny at the root. Admit portable project material explicitly.
+/*
+!/.gitignore
+!/.env.example
+!/README.md
+!/LICENSE
+!/Makefile
+!/infra/
+!/kernel/
+!/patches/
+!/shields/
+!/demos/
+!/docs/
+!/tools/
+!/.github/
+
+# Environment-specific names (subscription, resource group, IPs) live here.
+.env
+.env.*
+!.env.example
+.state/
+
+# Personal drafts: X thread, LinkedIn article, notes, screenshots.
+.scratch/
+
+# Keys and credentials never enter the repository.
+*.pem
+*.key
+*.der
+*.p12
+*.pfx
+keys/
+operator-keys/
+kubeconfig
+*.kubeconfig
+credentials.json
+
+# Build outputs and downloads.
+build/
+artifacts/
+out/
+*.deb
+*.zip
+*.tar
+*.tar.*
+*.bee
+*.upatch
+*.img
+*.verity
+*.roothash
+*.p7s
+*.efi
+*.jar
+*.class
+*.log
+__pycache__/
+*.py[cod]
+.venv/
+
+# Keep editable Excalidraw scenes; image exports are regenerated.
+docs/figures/*.excalidraw.png
+
+.DS_Store
