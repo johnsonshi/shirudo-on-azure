@@ -27,6 +27,17 @@ INPUTS = (
     APP+"/Beefile", APP+"/app-sandbox.bpf.c", APP+"/gen_policy.py", APP+"/sandbox.toml", APP+"/README.md",
 )
 CLI = "/usr/bin/shirudo"
+APP_PACKAGE = "app-sandbox-1.0.0"
+
+
+def extract_app_load(archive, load):
+    expected = APP_PACKAGE + "/upatches/app-sandbox.upatch"
+    with tarfile.open(archive, "r:gz") as pkg:
+        hits = [m for m in pkg.getmembers() if m.name == expected]
+        if len(hits) != 1 or not hits[0].isreg() or not 0 < hits[0].size <= 16*1024**2:
+            raise ValueError("expected exactly one regular version-prefixed app-sandbox load")
+        with pkg.extractfile(hits[0]) as src, load.open("xb") as dst:
+            dst.write(src.read())
 
 
 def export_inputs(repo, base, work):
@@ -69,7 +80,10 @@ def build(work):
     with header.open("xb") as f:
         subprocess.run([home / "build/shirudo/src/tools/gen-vmlinux-h/gen-vmlinux-h", btfs[0]], stdout=f, check=True)
     subprocess.run(["cmp", "-s", header, "/usr/share/shirudo/vmlinux.h"], check=True)
-    out = home / "build/shields"
+    final = home / "build/shields"
+    if final.exists() or final.is_symlink():
+        raise FileExistsError("refusing to replace existing control pairs")
+    out = work / "pairs"
     out.mkdir(mode=0o700)
     for stem in bundle.STEMS:
         name = Path(stem).name
@@ -81,12 +95,7 @@ def build(work):
             # Use the Beefile: a bare C build omits its generated rodata and policy selectors.
             subprocess.run([CLI, "bpm", "build", work / APP, "--version", "1.0.0", "--vmlinux", header,
                             *key_opts], cwd=work, check=True)
-            with tarfile.open(work / "app-sandbox-1.0.0.bee", "r:gz") as pkg:
-                member = pkg.getmember("upatches/app-sandbox.upatch")
-                if not member.isreg() or not 0 < member.size <= 16*1024**2:
-                    raise ValueError("unexpected app-sandbox package member")
-                with pkg.extractfile(member) as src, load.open("xb") as dst:
-                    dst.write(src.read())
+            extract_app_load(work / (APP_PACKAGE+".bee"), load)
         else:
             if name == "java-base64":
                 subprocess.run([work / BASE64 / "build.sh", "--jar-only"], cwd=work, check=True)
@@ -111,7 +120,11 @@ def build(work):
         subprocess.run([CLI, "build", "--unload", name, "--payload-sha256", digest,
                         *(["--java"] if is_java else []), "-o", unload, *key_opts], check=True)
         check_info(info(unload), name, "unload", kind, digest)
-    bundle.main(["controls", "seal"])
+    bundle.seal(out, bundle.CONTROL_FILES, "shirudo-on-azure/controls", create_key=False)
+    # Both are on ~/build. Never publish a partial directory or replace another run's output.
+    subprocess.run(["mv", "-Tn", "--", out, final], check=True)
+    if out.exists():
+        raise FileExistsError("another control output already exists")
 
 
 if __name__ == "__main__":

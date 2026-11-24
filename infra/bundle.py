@@ -112,6 +112,18 @@ def send(name, root=OUT, files=FILES, namespace=NAMESPACE):
         shutil.copyfileobj(verified, sys.stdout.buffer)
 
 
+def seal(root, files, namespace, create_key):
+    if not KEY.exists():
+        if not create_key:
+            raise ValueError("required existing boot transport signer is missing")
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "lab-transport",
+                        "-f", str(KEY)], check=True)
+    with (root / META[0]).open("xb") as f:
+        f.write(manifest(root, files))
+    subprocess.run(["ssh-keygen", "-Y", "sign", "-n", namespace, "-f", str(KEY),
+                    str(root / META[0])], check=True)
+
+
 def main(args):
     os.umask(0o077)
     controls = args[:1] == ["controls"]
@@ -121,15 +133,7 @@ def main(args):
         root = Path.home() / "build" / ("shields" if args[:1] in (["seal"], ["send"]) else "control-inbox")
         files, namespace = CONTROL_FILES, "shirudo-on-azure/controls"
     if args == ["seal"]:
-        if not KEY.exists():
-            if controls:
-                raise ValueError("required existing boot transport signer is missing")
-            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "lab-transport",
-                            "-f", str(KEY)], check=True)
-        with (root / META[0]).open("xb") as f:
-            f.write(manifest(root, files))
-        subprocess.run(["ssh-keygen", "-Y", "sign", "-n", namespace, "-f", str(KEY),
-                        str(root / META[0])], check=True)
+        seal(root, files, namespace, create_key=not controls)
     elif args == ["public-signer"]:
         sys.stdout.buffer.write(signer())
     elif args == ["begin-receive"]:

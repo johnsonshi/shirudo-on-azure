@@ -155,6 +155,30 @@ class Infrastructure(Fixture):
 
 
 class Transfers(Fixture):
+    def test_package_reader_accepts_only_one_versioned_regular_app_member(self):
+        expected = "app-sandbox-1.0.0/upatches/app-sandbox.upatch"
+        legacy = "upatches/app-sandbox.upatch"
+        archive, output = self.root / "sample.bee", self.root / "one.upatch"
+        for names, link, good in [([expected, "elsewhere/data"], False, True), ([legacy], False, False),
+                                  ([expected, expected], False, False), ([expected], True, False)]:
+            with self.subTest(names=names, link=link), tarfile.open(archive, "w:gz") as pkg:
+                for name in names:
+                    e = tarfile.TarInfo(name)
+                    if link:
+                        e.type, e.linkname = tarfile.SYMTYPE, "elsewhere"
+                        pkg.addfile(e)
+                    else:
+                        e.size = 4
+                        pkg.addfile(e, io.BytesIO(b"safe"))
+            if good:
+                build_controls.extract_app_load(archive, output)
+                self.assertEqual(output.read_bytes(), b"safe")
+                output.unlink()
+            else:
+                with self.assertRaises(ValueError):
+                    build_controls.extract_app_load(archive, output)
+                self.assertFalse(output.exists())
+
     def test_control_context_excludes_sibling_modules_and_untracked_bytes(self):
         self.new_repo()
         names = build_controls.INPUTS
