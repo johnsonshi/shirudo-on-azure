@@ -24,25 +24,25 @@ flowchart TB
 
         subgraph S_BPF["Kernel BPF Upatch"]
             direction TB
-            B1["Verification: Kernel checks ML-DSA-87<br/>loader against sealed .bpf keyring"]
-            B2["Activation: Attaches live to BPF LSM,<br/>tracing, or XDP without app restart"]
-            B3["Boundary & Upstream Inputs: Kernel LSM boundary;<br/>unmodified basic + broad AF_ALG socket guard"]
+            B1["Verify: .bpf keyring checks<br/>ML-DSA-87 signed loader"]
+            B2["Activate: Live BPF LSM, tracing, or XDP<br/>attach (labeled sandbox on next exec)"]
+            B3["Scope: Denies unsigned BPF ops<br/>in this boot; basic + AF_ALG"]
             B1 --> B2 --> B3
         end
 
-        subgraph S_JAVA["Java Agent Upatch (type = java)"]
+        subgraph S_JAVA["Java Upatch (type = java)"]
             direction TB
-            J1["Verification: Userspace checks signature;<br/>seals Premain-Class JAR in /run/shirudo-java"]
-            J2["Activation: Wires JAVA_TOOL_OPTIONS for<br/>newly started JVMs reading environment.d"]
-            J3["Boundary & Upstream Inputs: In-JVM guard;<br/>unmodified java-base64 + java-sql-inj (JDBC)"]
+            J1["Verify: Userspace check; seals<br/>Premain-Class JAR in /run/shirudo-java"]
+            J2["Activate: Sets JAVA_TOOL_OPTIONS<br/>for new JVMs via environment.d"]
+            J3["Scope: In-JVM app guard;<br/>java-base64 + java-sql-inj"]
             J1 --> J2 --> J3
         end
 
-        subgraph S_PHP["PHP Web Containment (app-sandbox)"]
+        subgraph S_PHP["PHP Containment (app-sandbox)"]
             direction TB
-            P1["Mechanism: Unmodified app-sandbox BPF LSM<br/>labels httpd and php-fpm workers + children"]
-            P2["Containment: Blocks unexpected execve,<br/>unlisted egress IPs, and .php writes"]
-            P3["Limit: Does not fix the PHP bug itself;<br/>in-worker PHP still runs until upgraded"]
+            P1["Mechanism: BPF LSM labels<br/>httpd + php-fpm workers"]
+            P2["Contains: Blocks child execve,<br/>unlisted egress, + .php writes"]
+            P3["Limit: Does not fix PHP itself;<br/>upgrade still required"]
             P1 --> P2 --> P3
         end
     end
