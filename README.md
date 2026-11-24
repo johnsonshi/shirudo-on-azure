@@ -9,12 +9,15 @@ Read the [Azure field notes and architecture diagrams](docs/blog/shirudo-on-azur
 From a checkout of the commit you intend to run:
 
 ```sh
+demos/controls/app-sandbox.sh --receipt docs/results/azure-controls-real-runtimes.json
 python3 infra/azure/lab.py plan
 python3 infra/azure/lab.py files operator
 python3 infra/azure/lab.py files target
 python3 -m unittest discover -s tools/tests
 python3 -I demos/controls/test_controls.py
 ```
+
+The first command replays the recorded PHP-FPM result; it does not start a service. The [five per-control demo commands](demos/controls/README.md#replay-a-single-recorded-control-offline) work with either receipt.
 
 These commands need Python 3.9+, Git and OpenSSH (including `ssh-keygen -Y` for the tests). They do not log in, provision infrastructure, or contact a guest. The kernel/UKI recipe was booted on Azure; the workstation orchestration and its failure paths are tested offline. A healthy runtime or a benign policy check is **not** evidence that a particular CVE was prevented.
 

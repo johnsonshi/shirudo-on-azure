@@ -4,6 +4,20 @@ This runs five fixed, defensive controls on the existing two-role Azure lab. It 
 
 Measured receipts: [fixed fixtures](../../docs/results/azure-controls.json) and [real PHP-FPM and H2 JDBC](../../docs/results/azure-controls-real-runtimes.json). The latter used a private Unix socket, never an IP listener.
 
+### Replay a single recorded control (offline)
+
+From the repository root, choose one command. Each reads the fixed-fixture receipt by default, links to its pinned upstream source, and shows the before, active, restored and positive-control observations:
+
+```sh
+demos/controls/basic.sh
+demos/controls/java-base64.sh
+demos/controls/app-sandbox.sh
+demos/controls/java-sql-inj.sh
+demos/controls/af-alg.sh
+```
+
+Pass `--receipt docs/results/azure-controls-real-runtimes.json` to show the separate Ubuntu PHP-FPM/H2 run, or supply a receipt from your own full suite. Exit `0` means the selected recorded row matches its expected observations, `3` means unsupported, and other nonzero statuses indicate missing, malformed or contradictory evidence. These commands do not contact Azure or cryptographically verify a quote. To collect live evidence, run the full suite **once** as described below, then replay its receipt.
+
 | Control | What to look for |
 |---|---|
 | [Quickstart `basic`](https://github.com/shirudo-dev/shirudo/blob/ff5dd643ac0b3d68310450a2cb9b668416eac036/testing/fixtures/basic.bpf.c) | The signed no-op is absent, present, then absent. Both events advance the certified register. |
